@@ -2,6 +2,7 @@ package patrol
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,10 @@ import (
 )
 
 const eventLogCap = 500
+
+// eventLogHydrateMaxBytes caps how much of patrol.log we read on first hydrate.
+// The file is append-only and can grow without bound; only the tail is needed.
+const eventLogHydrateMaxBytes int64 = 1 << 20 // 1 MiB
 
 // appendEvent records a human-readable patrol/cleanup line for the panel log view.
 // Also appends to GROK_HOME/logs/patrol.log when possible.
@@ -70,11 +75,42 @@ func (s *Service) hydrateEventLogFromFile() {
 	if path == "" {
 		path = filepath.Join(filepath.Dir(s.statePath), "logs", "patrol.log")
 	}
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return
 	}
-	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return
+	}
+	size := info.Size()
+	var offset int64
+	readSize := size
+	if size > eventLogHydrateMaxBytes {
+		offset = size - eventLogHydrateMaxBytes
+		readSize = eventLogHydrateMaxBytes
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return
+	}
+	buf := make([]byte, readSize)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return
+	}
+	buf = buf[:n]
+	// If we started mid-file, drop the first partial line.
+	if offset > 0 {
+		if i := strings.IndexByte(string(buf), '\n'); i >= 0 {
+			buf = buf[i+1:]
+		} else {
+			return
+		}
+	}
+
+	lines := strings.Split(strings.ReplaceAll(string(buf), "\r\n", "\n"), "\n")
 	var cleaned []string
 	for _, ln := range lines {
 		ln = strings.TrimRight(ln, "\r")

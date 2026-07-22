@@ -21,13 +21,14 @@ func (s *Server) handlePoolOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePoolCleanup runs free-usage / quota exhausted cleanup on the live CPA pool.
-// Manual call force-runs even when CLEANUP_QUOTA_ENABLED=0; dry-run/backup still follow config.
+// Manual panel calls should pass force=true to bypass CLEANUP_QUOTA_ENABLED.
+// force defaults to false so accidental empty-body POSTs cannot bypass the safety switch.
 func (s *Server) handlePoolCleanup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Force *bool `json:"force"`
 	}
 	_ = decodeJSONBody(r, &body)
-	force := true
+	force := false
 	if body.Force != nil {
 		force = *body.Force
 	}

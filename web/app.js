@@ -640,7 +640,10 @@ async function loadPoolOverview() {
     if (c.last_reason) cb.push(c.last_reason);
     if (c.last) {
       const L = c.last;
-      cb.push(`扫 ${L.scanned ?? 0} / 命中 ${L.quota_hits ?? 0} / 删 ${L.deleted ?? 0}`);
+      const delLabel = L.dry_run
+        ? `将删 ${L.would_delete ?? L.quota_hits ?? 0}`
+        : `删 ${L.deleted ?? 0}`;
+      cb.push(`扫 ${L.scanned ?? 0} / 命中 ${L.quota_hits ?? 0} / ${delLabel}`);
     }
     $('poolCleanupStatus').textContent = cb.join(' · ');
   } catch (e) {
@@ -682,8 +685,9 @@ async function triggerPatrol(mode) {
   try {
     await api('/api/pool/patrol', { method: 'POST', body: JSON.stringify({ mode }) });
     toast(mode === 'deep' ? '深检已启动' : '轻检已启动');
-    setTimeout(() => { loadPool(); loadPoolLogs(); }, 1200);
-    setTimeout(() => { loadPool(); loadPoolLogs(); }, 4000);
+    // loadPool() already refreshes overview + history + logs
+    setTimeout(() => { loadPool(); }, 1200);
+    setTimeout(() => { loadPool(); }, 4000);
   } catch (e) { toast(e.message, true); }
 }
 $('poolPatrolLightBtn').onclick = () => triggerPatrol('light');

@@ -1,7 +1,7 @@
 package patrol
 
 import (
-	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -45,8 +45,11 @@ func TestCleanupDryRunDeletesNothing(t *testing.T) {
 	if res.QuotaHits != 1 {
 		t.Fatalf("quota hits=%d want 1", res.QuotaHits)
 	}
-	if res.Deleted != 1 { // dry-run counts would-delete into Deleted
-		t.Fatalf("deleted(would)=%d", res.Deleted)
+	if res.Deleted != 0 {
+		t.Fatalf("dry-run deleted=%d want 0", res.Deleted)
+	}
+	if res.WouldDelete != 1 {
+		t.Fatalf("would_delete=%d want 1", res.WouldDelete)
 	}
 	if len(mgmt.files) != 3 {
 		t.Fatalf("dry-run must not mutate remote list, got %d", len(mgmt.files))
@@ -87,5 +90,43 @@ func TestCleanupDeletesExhaustedOnly(t *testing.T) {
 	if !names["rate.json"] || !names["ok.json"] {
 		t.Fatalf("should keep non-exhausted: %v", names)
 	}
-	_ = json.Marshal
+}
+
+func TestCleanupProbesUnmarkedWhenMixedMeta(t *testing.T) {
+	mgmt := &fakeMgmt{files: []cpa.AuthMeta{
+		{Name: "meta-dead.json", Status: "error", StatusMessage: "subscription:free-usage-exhausted"},
+		{Name: "unmarked-dead.json"}, // empty metadata; probe will report exhausted
+		{Name: "ok.json"},
+		{Name: "rate.json", Status: "error", StatusMessage: "429 rate limit"},
+	}}
+	s := New(filepath.Join(t.TempDir(), "patrol-state.json"),
+		testConfig(func(cfg *config.Config) {
+			cfg.CleanupQuotaEnabled = true
+			cfg.CleanupDryRun = true
+			cfg.CleanupBackup = false
+		}),
+		func(config.Config) ManagementAPI { return mgmt }, nil)
+	s.SetBackupDir(t.TempDir())
+	s.probeFn = func(doc cpa.Document, proxy string) error {
+		if doc.Email == "unmarked-dead.json" {
+			return fmt.Errorf("probe http=403 body=free-usage-exhausted")
+		}
+		if doc.Email == "ok.json" {
+			return nil
+		}
+		return nil
+	}
+	res, err := s.RunCleanup(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.QuotaHits != 2 {
+		t.Fatalf("quota hits=%d want 2 (meta + probe); would=%d sample=%v", res.QuotaHits, res.WouldDelete, res.SampleWould)
+	}
+	if res.Deleted != 0 || res.WouldDelete != 2 {
+		t.Fatalf("deleted=%d would=%d", res.Deleted, res.WouldDelete)
+	}
+	if len(mgmt.files) != 4 {
+		t.Fatalf("dry-run must keep remote list, got %d", len(mgmt.files))
+	}
 }

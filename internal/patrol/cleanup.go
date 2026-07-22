@@ -19,6 +19,7 @@ type CleanupResult struct {
 	Scanned       int       `json:"scanned"`
 	QuotaHits     int       `json:"quota_hits"`
 	Deleted       int       `json:"deleted"`
+	WouldDelete   int       `json:"would_delete"`
 	BackedUp      int       `json:"backed_up"`
 	Skipped       int       `json:"skipped"`
 	Errors        int       `json:"errors"`
@@ -33,13 +34,13 @@ type CleanupResult struct {
 
 // CleanupStatus is the controller snapshot for the panel.
 type CleanupStatus struct {
-	Enabled       bool           `json:"enabled"`
-	OnPatrol      bool           `json:"on_patrol"`
-	Backup        bool           `json:"backup"`
-	DryRun        bool           `json:"dry_run"`
-	Last          *CleanupResult `json:"last,omitempty"`
-	LastRun       *time.Time     `json:"last_run,omitempty"`
-	LastReason    string         `json:"last_reason,omitempty"`
+	Enabled    bool           `json:"enabled"`
+	OnPatrol   bool           `json:"on_patrol"`
+	Backup     bool           `json:"backup"`
+	DryRun     bool           `json:"dry_run"`
+	Last       *CleanupResult `json:"last,omitempty"`
+	LastRun    *time.Time     `json:"last_run,omitempty"`
+	LastReason string         `json:"last_reason,omitempty"`
 }
 
 // Deleter is the Management API surface cleanup needs.
@@ -113,24 +114,54 @@ func (s *Service) RunCleanup(force bool) (*CleanupResult, error) {
 	s.appendEvent("清理扫描远端 %d 条", res.Scanned)
 
 	var targets []cpa.AuthMeta
+	seen := map[string]struct{}{}
 	metaHits := 0
+	needProbe := make([]cpa.AuthMeta, 0, len(list))
 	for _, m := range list {
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			continue
+		}
 		if cpa.IsQuotaExhausted(m.Status, m.StatusMessage) {
-			targets = append(targets, m)
-			metaHits++
+			if _, ok := seen[name]; !ok {
+				targets = append(targets, m)
+				seen[name] = struct{}{}
+				metaHits++
+			}
+			continue
+		}
+		// Pure transient 429 (with no exhausted marker) must never be deleted.
+		if cpa.IsTransientRateLimit(m.Status, m.StatusMessage) {
+			continue
+		}
+		// Empty / non-conclusive metadata: fall back to download+probe per entry.
+		// Do not gate this on metaHits==0 — mixed lists still need probing.
+		if m.Disabled {
+			continue
+		}
+		if strings.TrimSpace(m.Status) == "" && strings.TrimSpace(m.StatusMessage) == "" {
+			needProbe = append(needProbe, m)
+			continue
+		}
+		// Status present but not exhausted/transient: still probe when message is empty,
+		// because some CPA builds only put the real reason into the live probe path.
+		if strings.TrimSpace(m.StatusMessage) == "" {
+			needProbe = append(needProbe, m)
 		}
 	}
-	// Many CPA deployments leave status_message empty on list metadata.
-	// Fall back to download + probe so free-usage-exhausted is still found.
-	// Pure transient 429 without exhausted markers is never selected.
-	if metaHits == 0 {
-		s.appendEvent("列表元数据无限额标记，回退 download+probe 识别耗尽号…")
+	probeHits := 0
+	if len(needProbe) > 0 {
+		s.appendEvent("列表 %d 条元数据不足，回退 download+probe 识别耗尽号…", len(needProbe))
 		proxy := cfg.RegisterProxy
-		for _, m := range list {
-			if m.Disabled || strings.TrimSpace(m.Name) == "" {
+		for _, m := range needProbe {
+			name := strings.TrimSpace(m.Name)
+			if name == "" {
 				continue
 			}
-			raw, err := del.Download(m.Name)
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			raw, err := del.Download(name)
 			if err != nil {
 				continue
 			}
@@ -145,12 +176,14 @@ func (s *Service) RunCleanup(force bool) (*CleanupResult, error) {
 			low := strings.ToLower(err.Error())
 			if cpa.IsQuotaExhausted("", low) {
 				targets = append(targets, m)
+				seen[name] = struct{}{}
+				probeHits++
 			}
 			// IsTransientRateLimit alone → keep (may recover)
 		}
 	}
 	res.QuotaHits = len(targets)
-	s.appendEvent("限额耗尽命中 %d 条（元数据命中 %d）", res.QuotaHits, metaHits)
+	s.appendEvent("限额耗尽命中 %d 条（元数据 %d / probe %d）", res.QuotaHits, metaHits, probeHits)
 	if len(targets) == 0 {
 		res.Reason = "无限额耗尽号"
 		s.storeCleanup(res, "扫描完成：无限额耗尽号可清理")
@@ -179,7 +212,7 @@ func (s *Service) RunCleanup(force bool) (*CleanupResult, error) {
 			if len(res.SampleWould) < 20 {
 				res.SampleWould = append(res.SampleWould, name)
 			}
-			res.Deleted++ // would-delete count under dry-run
+			res.WouldDelete++
 			continue
 		}
 
@@ -219,7 +252,7 @@ func (s *Service) RunCleanup(force bool) (*CleanupResult, error) {
 
 	res.DurationMS = time.Since(started).Milliseconds()
 	if cfg.CleanupDryRun {
-		res.Reason = fmt.Sprintf("dry-run：将删除 %d 个限额耗尽号（未实际删除）", res.QuotaHits)
+		res.Reason = fmt.Sprintf("dry-run：将删除 %d 个限额耗尽号（未实际删除）", res.WouldDelete)
 	} else {
 		res.Reason = fmt.Sprintf("已删除 %d / 命中 %d（错误 %d）", res.Deleted, res.QuotaHits, res.Errors)
 	}
