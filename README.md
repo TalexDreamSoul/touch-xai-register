@@ -2,17 +2,45 @@
 
 Grok 免费号 **注册 → OAuth → CPA 可用 JSON** 二合一 CLI（Go），附带 **Web 面板 + Docker 全家桶**。
 
+## 5 分钟启动
+
 ```bash
-# CLI
+# 0) 依赖：Docker(OrbStack) 运行中；本机编译需要 Go（mise/go 皆可）
+cd touch-xai-register
+
+# 1) 一键（推荐 macOS / 开发机）
+make up
+# 打开 http://127.0.0.1:8787
+# Token 见终端输出（默认 local-dev-token；Docker 旧容器可能是 local-dev-token-change-me）
+
+# 2) 状态 / 停止
+make status
+make down            # 停宿主 panel
+make down ALL=1      # 停 panel + clearance
+
+# 3) 服务器 / 完整 Docker 全家桶
+cp .env.example .env   # 改 PANEL_TOKEN
+make docker-up         # 或 docker compose up -d --build
+# 代码更新后只重建面板：
+make docker-rebuild
+```
+
+| 场景 | 命令 | 说明 |
+|------|------|------|
+| 开发机最快 | `make up` | 已有 `grok-panel` 容器则直接复用；否则 clearance + 宿主 `bin/grok panel` |
+| 只要面板不要 Turnstile | `SKIP_TURNSTILE=1 make up` | 上传/导出/巡检可用，注册 mint 可能失败 |
+| 完整容器 | `make docker-up` | WARP+Privoxy+FlareSolverr+panel，数据在 volume `grok-data` |
+| CLI 注册 | `make build && ./bin/grok start -t 10` | 与 panel 共用 `GROK_HOME`（默认 `~/.grok`） |
+
+面板能力：注册流水线 · 凭证上传 · 分批导出 · 号池巡检/清理 · 自动补号。服务器细节见 `DEPLOY.md`。
+
+```bash
+# CLI 速查
 grok start -t 10
 grok status
 grok logs -f
 grok stop
 grok panel     # Web 控制台 :8787
-
-# 或服务器一键
-cp .env.example .env && docker compose up -d --build
-# 打开 http://服务器:8787  → 详见 DEPLOY.md
 ```
 
 ---
