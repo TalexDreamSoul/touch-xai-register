@@ -1,0 +1,10 @@
+.git
+.venv
+.grok-home
+bin
+data
+*.log
+.env
+node_modules
+.DS_Store
+**/.DS_Store

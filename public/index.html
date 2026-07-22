@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>touch-xai-register</title>
+  <meta name="description" content="CLIProxyAPI 远程凭证批量上传 / 分批导出工具" />
+  <meta name="theme-color" content="#000000" />
+  <meta name="color-scheme" content="dark light" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('cpa-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+        else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      } catch (_) {}
+    })();
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <h1>touch-xai-register <span id="appVersion" class="ver-badge" title="版本">v?</span></h1>
+          <p class="sub">CPA 凭证 · 批量上传 / 分批导出 · SSE · zip 分卷</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="connBadge" class="badge">未连接</span>
+        <button id="btnTheme" class="btn btn-outline btn-icon" type="button" title="切换主题" aria-label="切换主题">
+          <span class="icon-sun" aria-hidden="true">☀</span>
+          <span class="icon-moon" aria-hidden="true">☾</span>
+        </button>
+        <a class="btn btn-outline" href="/panel/" title="Grok 注册面板">注册面板</a>
+        <button id="btnRefreshRemote" class="btn btn-outline" type="button">刷新远端</button>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>连接配置</h2>
+          <p class="card-desc">远程 CLIProxyAPI Management 地址与密钥</p>
+        </div>
+        <div class="row gap">
+          <button id="btnTest" class="btn btn-outline" type="button">测试连接</button>
+          <button id="btnSaveConfig" class="btn btn-primary" type="button">保存</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <label class="field">
+          <span class="label">Base URL</span>
+          <input id="baseUrl" class="input" type="url" placeholder="https://cpa.example.com 或 http://127.0.0.1:8317" />
+        </label>
+        <label class="field">
+          <span class="label">Management Key</span>
+          <input id="managementKey" class="input" type="password" placeholder="management secret / password" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span class="label">并发上限</span>
+          <input id="concurrency" class="input" type="number" min="1" max="100" value="20" />
+        </label>
+        <label class="field">
+          <span class="label">每批数量（批内并行）</span>
+          <input id="batchSize" class="input" type="number" min="1" max="500" value="100" />
+        </label>
+        <label class="field">
+          <span class="label">超时 (ms)</span>
+          <input id="timeoutMs" class="input" type="number" min="3000" max="300000" value="30000" />
+        </label>
+        <label class="field">
+          <span class="label">单文件重试</span>
+          <input id="retryLimit" class="input" type="number" min="0" max="10" value="2" />
+        </label>
+      </div>
+      <p id="testMsg" class="hint"></p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>选择凭证</h2>
+          <p class="card-desc">支持 .json / .zip、服务端路径、粘贴 JSON</p>
+        </div>
+      </div>
+
+      <div
+        id="dropzone"
+        class="dropzone"
+        tabindex="0"
+        role="button"
+        aria-label="拖拽或点击选择凭证文件"
+      >
+        <div class="dz-icon" aria-hidden="true">↑</div>
+        <div class="dz-title">拖拽文件到此处，或点击选择</div>
+        <div class="dz-sub">.json · .zip（自动解压）· 可多选</div>
+        <input id="fileInput" type="file" multiple accept=".json,.zip,application/json,application/zip" hidden />
+      </div>
+
+      <div class="grid-2 mt">
+        <label class="field">
+          <span class="label">服务端本地文件夹（可选）</span>
+          <input id="folderPath" class="input" type="text" placeholder="/abs/path/to/auths" />
+        </label>
+        <div class="field">
+          <span class="label">已选文件</span>
+          <div id="fileList" class="file-list">尚未选择</div>
+        </div>
+      </div>
+
+      <label class="field mt">
+        <span class="label">粘贴 JSON（对象 / 数组）</span>
+        <textarea id="rawJson" class="textarea" rows="4" placeholder='{"email":"...","access_token":"..."} 或 [{...},{...}]'></textarea>
+      </label>
+
+      <div class="row gap mt">
+        <button id="btnPrepare" class="btn btn-primary" type="button">解析并创建任务</button>
+        <button id="btnClearFiles" class="btn btn-ghost" type="button">清空</button>
+        <span id="prepareMsg" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>上传进度</h2>
+          <p class="card-desc">SSE 实时状态 · 本地缓存跳过 · 失败可重传</p>
+        </div>
+        <div class="row gap">
+          <button id="btnStart" class="btn btn-primary" type="button" disabled>开始上传</button>
+          <button id="btnRetry" class="btn btn-outline" type="button" disabled>重传失败</button>
+          <button id="btnCancel" class="btn btn-destructive" type="button" disabled>取消</button>
+        </div>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-meta">
+          <span id="jobStatus" class="muted">待命</span>
+          <span id="jobCounts" class="muted">0 / 0</span>
+        </div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="progressFill" class="progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <div class="stats stats-5">
+        <div class="stat">
+          <b id="cSuccess">0</b>
+          <span>成功</span>
+        </div>
+        <div class="stat">
+          <b id="cFailed" class="text-destructive">0</b>
+          <span>失败</span>
+        </div>
+        <div class="stat">
+          <b id="cUploading">0</b>
+          <span>上传中</span>
+        </div>
+        <div class="stat">
+          <b id="cPending">0</b>
+          <span>等待</span>
+        </div>
+        <div class="stat">
+          <b id="cSkipped">0</b>
+          <span>缓存跳过</span>
+        </div>
+      </div>
+
+      <div class="table-toolbar">
+        <div class="row gap">
+          <label class="inline-field">
+            <span class="label">筛选</span>
+            <select id="itemFilter" class="input select">
+              <option value="all">全部</option>
+              <option value="failed">失败</option>
+              <option value="uploading">上传中</option>
+              <option value="pending">等待</option>
+              <option value="success">成功</option>
+              <option value="skipped">缓存跳过</option>
+            </select>
+          </label>
+          <label class="inline-field">
+            <span class="label">每页</span>
+            <select id="pageSize" class="input select">
+              <option value="20">20</option>
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <label class="check-field">
+            <input id="skipCached" type="checkbox" checked />
+            <span>跳过本地已上传缓存</span>
+          </label>
+        </div>
+        <div class="row gap">
+          <button id="btnClearCache" class="btn btn-ghost" type="button">清空缓存</button>
+          <span id="cacheMsg" class="hint inline-hint"></span>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="item-table">
+          <thead>
+            <tr>
+              <th class="col-status">状态</th>
+              <th class="col-name">文件名</th>
+              <th class="col-preview">预览</th>
+              <th class="col-try">尝试</th>
+              <th class="col-error">错误 / 说明</th>
+            </tr>
+          </thead>
+          <tbody id="itemBody">
+            <tr><td colspan="5" class="empty">创建任务后显示明细</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pager">
+        <button id="btnPrevPage" class="btn btn-outline btn-sm" type="button" disabled>上一页</button>
+        <span id="pageInfo" class="muted">0 / 0</span>
+        <button id="btnNextPage" class="btn btn-outline btn-sm" type="button" disabled>下一页</button>
+      </div>
+
+      <details class="mt log-details">
+        <summary>实时日志</summary>
+        <pre id="logBox" class="log-box"></pre>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>批量导出</h2>
+          <p class="card-desc">list → 分批 download → 多卷 zip · 大号池安全导出</p>
+        </div>
+        <div class="row gap">
+          <button id="btnExportPreview" class="btn btn-outline" type="button">预览匹配</button>
+          <button id="btnExportStart" class="btn btn-primary" type="button">开始导出</button>
+          <button id="btnExportRetry" class="btn btn-outline" type="button" disabled>重试失败</button>
+          <button id="btnExportCancel" class="btn btn-destructive" type="button" disabled>取消</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <label class="field">
+          <span class="label">Provider（可选）</span>
+          <input id="exportProvider" class="input" type="text" placeholder="xai / codex / unknown，留空=全部" />
+        </label>
+        <label class="field">
+          <span class="label">Email 包含（可选）</span>
+          <input id="exportEmail" class="input" type="text" placeholder="例如 1577777.xyz" />
+        </label>
+        <label class="field">
+          <span class="label">文件名包含（可选）</span>
+          <input id="exportName" class="input" type="text" placeholder="例如 @gmail" />
+        </label>
+        <label class="field">
+          <span class="label">数量上限（可选）</span>
+          <input id="exportLimit" class="input" type="number" min="1" max="200000" placeholder="留空=全部匹配" />
+        </label>
+        <label class="field">
+          <span class="label">每批文件数（分卷）</span>
+          <input id="exportBatchSize" class="input" type="number" min="50" max="2000" value="500" />
+        </label>
+        <label class="field">
+          <span class="label">导出并发</span>
+          <input id="exportConcurrency" class="input" type="number" min="1" max="50" value="15" />
+        </label>
+      </div>
+      <label class="check-field mt">
+        <input id="exportKeepFiles" type="checkbox" />
+        <span>保留解压后的单文件（默认只保留 zip 分卷，更省磁盘）</span>
+      </label>
+      <p id="exportMsg" class="hint"></p>
+
+      <div class="progress-wrap mt">
+        <div class="progress-meta">
+          <span id="exportStatus" class="muted">待命</span>
+          <span id="exportCounts" class="muted">0 / 0</span>
+        </div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="exportProgressFill" class="progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <div class="stats stats-5">
+        <div class="stat">
+          <b id="eSuccess">0</b>
+          <span>成功</span>
+        </div>
+        <div class="stat">
+          <b id="eFailed" class="text-destructive">0</b>
+          <span>失败</span>
+        </div>
+        <div class="stat">
+          <b id="eDownloading">0</b>
+          <span>下载中</span>
+        </div>
+        <div class="stat">
+          <b id="ePending">0</b>
+          <span>等待</span>
+        </div>
+        <div class="stat">
+          <b id="eParts">0</b>
+          <span>zip 分卷</span>
+        </div>
+      </div>
+
+      <div class="table-wrap mt">
+        <table>
+          <thead>
+            <tr>
+              <th>分卷</th>
+              <th>文件数</th>
+              <th>大小</th>
+              <th>下载</th>
+            </tr>
+          </thead>
+          <tbody id="exportPartsBody">
+            <tr><td colspan="4" class="empty">导出完成后显示 zip 分卷</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="row gap mt">
+        <a id="btnExportDownloadAll" class="btn btn-outline" href="#" style="display:none;text-decoration:none">下载全部分卷</a>
+        <span id="exportPathHint" class="hint inline-hint"></span>
+      </div>
+
+      <details class="mt log-details">
+        <summary>导出日志</summary>
+        <pre id="exportLogBox" class="log-box"></pre>
+      </details>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>远端凭证</h2>
+          <p class="card-desc">GET /v0/management/auth-files（摘要预览）</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>Provider</th>
+              <th>Status</th>
+              <th>Email</th>
+              <th>成功/失败</th>
+            </tr>
+          </thead>
+          <tbody id="remoteBody">
+            <tr><td colspan="5" class="empty">点击「刷新远端」</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <code>upload · export · SSE</code>
+      <span class="dot">·</span>
+      <code>data/exports/</code>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

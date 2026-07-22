@@ -1,0 +1,2 @@
+playwright>=1.55
+cloakbrowser>=0.3.0

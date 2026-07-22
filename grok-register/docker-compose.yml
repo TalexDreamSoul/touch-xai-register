@@ -1,0 +1,115 @@
+# Grok-Register full stack: WARP + Privoxy + FlareSolverr + Panel
+#
+#   cp .env.example .env   # set PANEL_TOKEN
+#   docker compose up -d --build
+#   open http://SERVER:8787
+#
+# Data persists in the named volume `grok-data` (or ./data if you bind-mount).
+
+services:
+  warp-proxy:
+    image: caomingjun/warp:latest
+    container_name: grok-warp
+    restart: unless-stopped
+    environment:
+      WARP_SLEEP: "2"
+      # WARP_LICENSE_KEY: ${WARP_LICENSE_KEY:-}
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+      net.ipv4.conf.all.src_valid_mark: 1
+    # optional host debug ports (loopback)
+    ports:
+      - "127.0.0.1:${WARP_SOCKS_PORT:-40000}:1080"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.create_connection(('127.0.0.1', 1080), 5); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  privoxy:
+    image: vimagick/privoxy:latest
+    container_name: grok-privoxy
+    restart: unless-stopped
+    depends_on:
+      warp-proxy:
+        condition: service_started
+    volumes:
+      - ./clearance/privoxy-warp.conf:/etc/privoxy/config:ro
+    ports:
+      - "127.0.0.1:${PRIVOXY_PORT:-40080}:8118"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8118 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: grok-flaresolverr
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: ${FLARESOLVERR_LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "127.0.0.1:${FLARESOLVERR_PORT:-8191}:8191"
+    depends_on:
+      privoxy:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8191/ >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grok-register-panel:local
+    container_name: grok-panel
+    restart: unless-stopped
+    depends_on:
+      privoxy:
+        condition: service_started
+      flaresolverr:
+        condition: service_started
+    environment:
+      GROK_HOME: /data
+      PANEL_ADDR: ":8787"
+      PANEL_TOKEN: ${PANEL_TOKEN:-}
+      # outbound via privoxy (docker DNS names)
+      REGISTER_PROXY: http://privoxy:8118
+      FLARESOLVERR_URL: http://flaresolverr:8191
+      CLEARANCE_PROXY: http://privoxy:8118
+      CLEARANCE_ENABLED: "1"
+      HTTP_PROXY: http://privoxy:8118
+      HTTPS_PROXY: http://privoxy:8118
+      NO_PROXY: 127.0.0.1,localhost,privoxy,flaresolverr,warp-proxy,panel
+      EMAIL_MODE: ${EMAIL_MODE:-tempmail}
+      CPA_UPLOAD_ENABLED: ${CPA_UPLOAD_ENABLED:-0}
+      CPA_MANAGEMENT_BASE: ${CPA_MANAGEMENT_BASE:-}
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY:-}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - grok-data:/data
+      # optional: bind mount for easy host access
+      # - ./data:/data
+    ports:
+      - "${PANEL_PORT:-8787}:8787"
+    # worker re-exec needs enough headroom for Chromium mint
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/api/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  grok-data:

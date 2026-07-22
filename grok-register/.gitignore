@@ -1,0 +1,35 @@
+# Binaries
+bin/
+*.exe
+*.test
+*.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local env / secrets
+.env
+config.env
+*.pem
+*.key
+
+# Go
+vendor/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Logs / runtime
+*.log
+logs/
+data/
+.grok-home/
