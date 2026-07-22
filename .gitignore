@@ -1,41 +1,35 @@
-# ===== 通用 =====
+# Binaries
+bin/
+*.exe
+*.test
+*.out
+
+# OS
 .DS_Store
-node_modules/
-*.log
-logs/
-*.pid
-*.lock
-*.png
-*.csv
+Thumbs.db
 
-# ===== 密钥与本地配置（切勿提交）=====
-.env
-!.env.example
-config.json
-config.local.json
-config.server.json
-*.local.json
-
-# ===== 凭证 / 令牌产物 =====
-tokens/
-accounts.json
-username.json
-shibai.json
-
-# ===== uploader 运行时数据（含 Management Key 与导出凭证）=====
-data/
-
-# ===== grok-register 本地产物 =====
-grok-register/bin/
-grok-register/.venv/
-grok-register/.grok-home/
-grok-register/outputs/
-grok-register/CPA/
-grok-register/state.json
-
-# ===== 编辑器 / 工具链 =====
-.serena/
-.spec-workflow/
-.wrangler/
+# IDE
 .idea/
 .vscode/
+*.swp
+*~
+
+# Local env / secrets
+.env
+config.env
+*.pem
+*.key
+
+# Go
+vendor/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Logs / runtime
+*.log
+logs/
+data/
+.grok-home/
