@@ -11,6 +11,11 @@ services:
     image: caomingjun/warp:latest
     container_name: grok-warp
     restart: unless-stopped
+    # Explicit public DNS: OrbStack's embedded resolver (0.250.250.200) can fail
+    # inside the WARP netns before registration completes.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       WARP_SLEEP: "2"
       # WARP_LICENSE_KEY: ${WARP_LICENSE_KEY:-}
