@@ -466,6 +466,40 @@ Grok-Register/
 
 ---
 
+## 清理限额耗尽号（正式池）
+
+自动上传会让 CPA 正式池无限累积；`free-usage-exhausted` 等限额耗尽号通常无法继续使用，但默认不会被移除。
+
+可选清理能力（**默认关闭**）：
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `CLEANUP_QUOTA_ENABLED` | `0` | 允许定时清理路径 |
+| `CLEANUP_ON_PATROL` | `1` | 巡检成功后自动清理 |
+| `CLEANUP_BACKUP` | `1` | 删除前下载到 `GROK_HOME/pool-backups/` |
+| `CLEANUP_DRY_RUN` | `0` | `1`=只报告不删除 |
+
+- 只删 **限额/免费额度耗尽**（`free-usage-exhausted` 等）
+- **不删** 纯 429 临时限流（可能恢复）
+- 列表元数据无 `status_message` 时，回退 download + probe 识别
+- 面板：号池页「清理限额耗尽」按钮（手动可 force，不要求总开关已开）
+- 巡检/清理文字日志：号池页日志区 + `GROK_HOME/logs/patrol.log`；API `GET /api/pool/logs`
+
+```bash
+# 设置里打开，或 config.env：
+CLEANUP_QUOTA_ENABLED=1
+CLEANUP_ON_PATROL=1
+CLEANUP_BACKUP=1
+CLEANUP_DRY_RUN=1   # 先演练
+
+# 手动
+# POST /api/pool/cleanup  {"force":true}
+```
+
+与 `REFILL_*` 互补：cleanup 清废号；健康不足时 refill 再注册补号。
+
+---
+
 ## 常见问题
 
 **`make build` / `sudo make install` 报 go not found**

@@ -75,6 +75,13 @@ type Config struct {
 	RefillBatch       int
 	RefillCooldownMin int
 	RefillDailyCap    int
+
+	// Cleanup free-usage / quota exhausted accounts from the live CPA pool.
+	// Transient 429 rate limits are never deleted by this path.
+	CleanupQuotaEnabled bool
+	CleanupOnPatrol     bool // run after each successful patrol
+	CleanupBackup       bool // download before delete
+	CleanupDryRun       bool // scan + report only
 }
 
 func Defaults() Config {
@@ -121,6 +128,10 @@ func Defaults() Config {
 		RefillBatch:           10,
 		RefillCooldownMin:     60,
 		RefillDailyCap:        50,
+		CleanupQuotaEnabled:   false,
+		CleanupOnPatrol:       true,
+		CleanupBackup:         true,
+		CleanupDryRun:         false,
 	}
 }
 
@@ -186,6 +197,10 @@ func Save(path string, cfg Config) error {
 	b.WriteString(fmt.Sprintf("REFILL_BATCH=%d\n", cfg.RefillBatch))
 	b.WriteString(fmt.Sprintf("REFILL_COOLDOWN_MIN=%d\n", cfg.RefillCooldownMin))
 	b.WriteString(fmt.Sprintf("REFILL_DAILY_CAP=%d\n", cfg.RefillDailyCap))
+	b.WriteString(fmt.Sprintf("CLEANUP_QUOTA_ENABLED=%s\n", bool01(cfg.CleanupQuotaEnabled)))
+	b.WriteString(fmt.Sprintf("CLEANUP_ON_PATROL=%s\n", bool01(cfg.CleanupOnPatrol)))
+	b.WriteString(fmt.Sprintf("CLEANUP_BACKUP=%s\n", bool01(cfg.CleanupBackup)))
+	b.WriteString(fmt.Sprintf("CLEANUP_DRY_RUN=%s\n", bool01(cfg.CleanupDryRun)))
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -407,6 +422,18 @@ func applyMap(cfg *Config, env map[string]string) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.RefillDailyCap = n
 		}
+	}
+	if v, ok := env["CLEANUP_QUOTA_ENABLED"]; ok {
+		cfg.CleanupQuotaEnabled = truthy(v)
+	}
+	if v, ok := env["CLEANUP_ON_PATROL"]; ok {
+		cfg.CleanupOnPatrol = truthy(v)
+	}
+	if v, ok := env["CLEANUP_BACKUP"]; ok {
+		cfg.CleanupBackup = truthy(v)
+	}
+	if v, ok := env["CLEANUP_DRY_RUN"]; ok {
+		cfg.CleanupDryRun = truthy(v)
 	}
 }
 

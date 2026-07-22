@@ -21,6 +21,16 @@ func (f *fakeMgmt) List() ([]cpa.AuthMeta, error) { return f.files, f.err }
 func (f *fakeMgmt) Download(name string) ([]byte, error) {
 	return json.Marshal(cpa.Document{AccessToken: "tok-" + name, Email: name})
 }
+func (f *fakeMgmt) Delete(name string) error {
+	out := f.files[:0]
+	for _, m := range f.files {
+		if m.Name != name {
+			out = append(out, m)
+		}
+	}
+	f.files = out
+	return nil
+}
 
 func testConfig(mut func(*config.Config)) func() config.Config {
 	return func() config.Config {

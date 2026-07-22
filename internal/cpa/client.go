@@ -12,15 +12,16 @@ import (
 // AuthMeta is the slimmed metadata of one remote auth-file, mirroring the
 // fields exposed by CLIProxyAPI's GET /v0/management/auth-files listing.
 type AuthMeta struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
-	Type     string `json:"type,omitempty"`
-	Status   string `json:"status,omitempty"`
-	Email    string `json:"email,omitempty"`
-	Disabled bool   `json:"disabled"`
-	Size     int64  `json:"size,omitempty"`
-	Success  int64  `json:"success,omitempty"`
-	Failed   int64  `json:"failed,omitempty"`
+	Name          string `json:"name"`
+	Provider      string `json:"provider"`
+	Type          string `json:"type,omitempty"`
+	Status        string `json:"status,omitempty"`
+	StatusMessage string `json:"status_message,omitempty"`
+	Email         string `json:"email,omitempty"`
+	Disabled      bool   `json:"disabled"`
+	Size          int64  `json:"size,omitempty"`
+	Success       int64  `json:"success,omitempty"`
+	Failed        int64  `json:"failed,omitempty"`
 }
 
 // Client is a general-purpose CPA Management API client (list / download /
@@ -144,10 +145,57 @@ func slimMeta(m map[string]any) AuthMeta {
 		Success:  numField(m, "success"),
 		Failed:   numField(m, "failed"),
 	}
+	// status_message may be a string or a structured object from CPA.
+	if v, ok := m["status_message"].(string); ok {
+		meta.StatusMessage = v
+	} else if raw, ok := m["status_message"]; ok && raw != nil {
+		if b, err := json.Marshal(raw); err == nil {
+			meta.StatusMessage = string(b)
+		}
+	}
+	if meta.StatusMessage == "" {
+		meta.StatusMessage = strField(m, "error", "message", "detail")
+	}
 	if v, ok := m["disabled"].(bool); ok {
 		meta.Disabled = v
 	}
 	return meta
+}
+
+// IsQuotaExhausted reports free-usage / quota exhaustion (not transient 429 alone).
+func IsQuotaExhausted(status, statusMessage string) bool {
+	blob := strings.ToLower(status + " " + statusMessage)
+	if blob == "" {
+		return false
+	}
+	markers := []string{
+		"free-usage-exhausted",
+		"usage-exhausted",
+		"subscription:free-usage-exhausted",
+		"used all the included free usage",
+		"you've used all the included free usage",
+		"quota exhausted",
+		"quota_exceeded",
+		"insufficient_quota",
+	}
+	for _, m := range markers {
+		if strings.Contains(blob, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsTransientRateLimit reports temporary rate limiting that may recover.
+func IsTransientRateLimit(status, statusMessage string) bool {
+	if IsQuotaExhausted(status, statusMessage) {
+		return false
+	}
+	blob := strings.ToLower(status + " " + statusMessage)
+	return strings.Contains(blob, "429") ||
+		strings.Contains(blob, "rate limit") ||
+		strings.Contains(blob, "rate_limited") ||
+		strings.Contains(blob, "too many requests")
 }
 
 func slimName(name string) AuthMeta {

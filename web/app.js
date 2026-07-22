@@ -578,7 +578,25 @@ $('exRetryBtn').onclick = async () => {
 async function loadPool() {
   loadPoolOverview();
   loadPoolHistory();
+  loadPoolLogs();
 }
+
+async function loadPoolLogs() {
+  try {
+    const d = await api('/api/pool/logs?tail=300');
+    const text = d.text || (d.lines || []).join('\n') || '（暂无巡检日志，点「立即轻检/深检」或「清理限额耗尽」后会出现）';
+    const el = $('poolLogView');
+    if (!el) return;
+    el.textContent = text;
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    const el = $('poolLogView');
+    if (el) el.textContent = e.message || String(e);
+  }
+}
+
+if ($('poolLogReload')) $('poolLogReload').onclick = loadPoolLogs;
+if ($('poolLogClear')) $('poolLogClear').onclick = () => { const el = $('poolLogView'); if (el) el.textContent = ''; };
 
 async function loadPoolOverview() {
   try {
@@ -608,6 +626,23 @@ async function loadPoolOverview() {
       rb.push('自动补号未启用');
     }
     $('poolRefillStatus').textContent = rb.join(' · ');
+    const c = d.cleanup || {};
+    const cb = [];
+    if (c.enabled) {
+      cb.push('清理限额耗尽：已启用');
+      if (c.on_patrol) cb.push('随巡检自动跑');
+      if (c.dry_run) cb.push('演练模式');
+      if (c.backup) cb.push('删前备份');
+    } else {
+      cb.push('清理限额耗尽：未启用定时（仍可手动点按钮）');
+    }
+    if (c.last_run) cb.push('上次 ' + String(c.last_run).replace('T', ' ').slice(0, 19));
+    if (c.last_reason) cb.push(c.last_reason);
+    if (c.last) {
+      const L = c.last;
+      cb.push(`扫 ${L.scanned ?? 0} / 命中 ${L.quota_hits ?? 0} / 删 ${L.deleted ?? 0}`);
+    }
+    $('poolCleanupStatus').textContent = cb.join(' · ');
   } catch (e) {
     $('poolPatrolStatus').textContent = e.message;
   }
@@ -647,11 +682,25 @@ async function triggerPatrol(mode) {
   try {
     await api('/api/pool/patrol', { method: 'POST', body: JSON.stringify({ mode }) });
     toast(mode === 'deep' ? '深检已启动' : '轻检已启动');
-    setTimeout(loadPool, 3000);
+    setTimeout(() => { loadPool(); loadPoolLogs(); }, 1200);
+    setTimeout(() => { loadPool(); loadPoolLogs(); }, 4000);
   } catch (e) { toast(e.message, true); }
 }
 $('poolPatrolLightBtn').onclick = () => triggerPatrol('light');
 $('poolPatrolDeepBtn').onclick = () => triggerPatrol('deep');
+
+$('poolCleanupBtn').onclick = async () => {
+  if (!confirm('将清理 CPA 正式池中 free-usage/quota 耗尽号（不删纯 429）。\n若设置了演练模式则只报告不删除。继续？')) return;
+  $('poolCleanupBtn').disabled = true;
+  try {
+    const d = await api('/api/pool/cleanup', { method: 'POST', body: JSON.stringify({ force: true }) });
+    const r = d.result || {};
+    toast(r.reason || (d.ok ? '清理完成' : (d.error || '清理结束')));
+    loadPoolOverview();
+    loadPoolLogs();
+  } catch (e) { toast(e.message, true); }
+  finally { $('poolCleanupBtn').disabled = false; }
+};
 
 $('poolFilesBtn').onclick = async () => {
   $('poolFilesBtn').disabled = true;
@@ -698,6 +747,10 @@ async function loadSettings() {
     $('cfgRefillBatch').value = c.refill_batch ?? 10;
     $('cfgRefillCooldown').value = c.refill_cooldown_min ?? 60;
     $('cfgRefillCap').value = c.refill_daily_cap ?? 50;
+    $('cfgCleanupEnabled').checked = !!c.cleanup_quota_enabled;
+    $('cfgCleanupOnPatrol').checked = c.cleanup_on_patrol !== false;
+    $('cfgCleanupBackup').checked = c.cleanup_backup !== false;
+    $('cfgCleanupDryRun').checked = !!c.cleanup_dry_run;
     $('settingsMsg').textContent = '';
   } catch (e) {
     $('settingsMsg').textContent = e.message;
@@ -722,6 +775,10 @@ $('settingsSaveBtn').onclick = async () => {
     refill_batch: parseInt($('cfgRefillBatch').value, 10),
     refill_cooldown_min: parseInt($('cfgRefillCooldown').value, 10),
     refill_daily_cap: parseInt($('cfgRefillCap').value, 10),
+    cleanup_quota_enabled: $('cfgCleanupEnabled').checked,
+    cleanup_on_patrol: $('cfgCleanupOnPatrol').checked,
+    cleanup_backup: $('cfgCleanupBackup').checked,
+    cleanup_dry_run: $('cfgCleanupDryRun').checked,
   };
   const key = $('cfgCpaKey').value.trim();
   if (key && !key.includes('*')) body.cpa_management_key = key;
