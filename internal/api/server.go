@@ -173,6 +173,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/pool/overview", s.handlePoolOverview)
 	s.mux.HandleFunc("POST /api/pool/patrol", s.handlePoolPatrol)
 	s.mux.HandleFunc("GET /api/pool/patrol/history", s.handlePoolPatrolHistory)
+	s.mux.HandleFunc("GET /api/pool/logs", s.handlePoolLogs)
+	s.mux.HandleFunc("POST /api/pool/cleanup", s.handlePoolCleanup)
 
 	if s.opt.WebFS != nil {
 		fileServer := http.FileServer(http.FS(s.opt.WebFS))
@@ -708,6 +710,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"refill_batch":                 cfg.RefillBatch,
 		"refill_cooldown_min":          cfg.RefillCooldownMin,
 		"refill_daily_cap":             cfg.RefillDailyCap,
+		"cleanup_quota_enabled":        cfg.CleanupQuotaEnabled,
+		"cleanup_on_patrol":            cfg.CleanupOnPatrol,
+		"cleanup_backup":               cfg.CleanupBackup,
+		"cleanup_dry_run":              cfg.CleanupDryRun,
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "config": view})
 }
@@ -746,6 +752,11 @@ type configUpdate struct {
 	RefillBatch       *int  `json:"refill_batch"`
 	RefillCooldownMin *int  `json:"refill_cooldown_min"`
 	RefillDailyCap    *int  `json:"refill_daily_cap"`
+
+	CleanupQuotaEnabled *bool `json:"cleanup_quota_enabled"`
+	CleanupOnPatrol     *bool `json:"cleanup_on_patrol"`
+	CleanupBackup       *bool `json:"cleanup_backup"`
+	CleanupDryRun       *bool `json:"cleanup_dry_run"`
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -855,6 +866,18 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.RefillDailyCap != nil {
 		cfg.RefillDailyCap = *u.RefillDailyCap
+	}
+	if u.CleanupQuotaEnabled != nil {
+		cfg.CleanupQuotaEnabled = *u.CleanupQuotaEnabled
+	}
+	if u.CleanupOnPatrol != nil {
+		cfg.CleanupOnPatrol = *u.CleanupOnPatrol
+	}
+	if u.CleanupBackup != nil {
+		cfg.CleanupBackup = *u.CleanupBackup
+	}
+	if u.CleanupDryRun != nil {
+		cfg.CleanupDryRun = *u.CleanupDryRun
 	}
 	if err := config.Save(s.opt.Paths.Config, cfg); err != nil {
 		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})

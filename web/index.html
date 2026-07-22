@@ -277,6 +277,7 @@
             <button class="btn-ghost btn-sm" id="poolTestBtn">测试连接</button>
             <button class="btn-ghost btn-sm" id="poolPatrolLightBtn">立即轻检</button>
             <button class="btn-primary btn-sm" id="poolPatrolDeepBtn">立即深检</button>
+            <button class="btn-ghost btn-sm" id="poolCleanupBtn">清理限额耗尽</button>
           </div>
         </div>
         <div class="stats six" style="margin-top:12px">
@@ -289,6 +290,19 @@
         </div>
         <div class="phase" id="poolPatrolStatus">巡检状态加载中…</div>
         <div class="phase muted" id="poolRefillStatus"></div>
+        <div class="phase muted" id="poolCleanupStatus"></div>
+      </section>
+
+      <section class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <h2 style="margin:0">巡检 / 清理日志</h2>
+          <div class="row">
+            <button class="btn-ghost btn-sm" id="poolLogReload">刷新</button>
+            <button class="btn-ghost btn-sm" id="poolLogClear">清屏</button>
+          </div>
+        </div>
+        <div class="log" id="poolLogView" style="min-height:180px;max-height:320px">加载中…</div>
+        <p class="small muted" style="margin-top:8px">记录巡检开始/分类/完成、清理命中与删除样本、补号触发。文件：GROK_HOME/logs/patrol.log</p>
       </section>
 
       <section class="card">
@@ -385,6 +399,27 @@
             <div class="field inline"><label>单日上限</label><input id="cfgRefillCap" type="number" min="1" max="10000" /></div>
           </div>
           <p class="small muted">触发条件：巡检后健康数 &lt; 下限，且距上次补号超过冷却期、当日未超上限、当前无注册任务运行。</p>
+        </section>
+
+        <section class="card">
+          <h2>清理限额耗尽号</h2>
+          <div class="field check">
+            <input type="checkbox" id="cfgCleanupEnabled" />
+            <label for="cfgCleanupEnabled">启用清理（仅 free-usage / quota 耗尽，不删纯 429 限流）</label>
+          </div>
+          <div class="field check">
+            <input type="checkbox" id="cfgCleanupOnPatrol" />
+            <label for="cfgCleanupOnPatrol">每次巡检成功后自动清理</label>
+          </div>
+          <div class="field check">
+            <input type="checkbox" id="cfgCleanupBackup" />
+            <label for="cfgCleanupBackup">删除前下载备份到 pool-backups/</label>
+          </div>
+          <div class="field check">
+            <input type="checkbox" id="cfgCleanupDryRun" />
+            <label for="cfgCleanupDryRun">演练模式（只扫描报告，不实际删除）</label>
+          </div>
+          <p class="small muted">正式池会无限累积时，用此功能及时去掉额度耗尽号。号池页也可点「清理限额耗尽」手动执行（手动执行不要求上方总开关已开）。</p>
         </section>
 
         <section class="card full">

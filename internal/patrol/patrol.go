@@ -62,6 +62,7 @@ type RefillStatus struct {
 type ManagementAPI interface {
 	List() ([]cpa.AuthMeta, error)
 	Download(name string) ([]byte, error)
+	Delete(name string) error
 }
 
 // StartPipelineFunc starts the registration pipeline with a target count.
@@ -76,6 +77,7 @@ type Service struct {
 	probeFn       func(doc cpa.Document, proxy string) error // injectable for tests
 
 	mu              sync.Mutex
+	logMu           sync.Mutex // event log only; may nest under mu via appendEvent from locked paths
 	running         bool
 	lastMode        string
 	lastRun         *time.Time
@@ -83,13 +85,23 @@ type Service struct {
 	last            *Record
 	history         []Record
 	refill          refillState
+	cleanup         cleanupState
+	eventLog        []string
+	eventLogPath    string
 	pipelineRunning PipelineRunningFunc
+	backupDir       string
 }
 
 type refillState struct {
 	lastRefill *time.Time
 	today      string // yyyy-mm-dd of todayCount
 	todayCount int
+	lastReason string
+}
+
+type cleanupState struct {
+	last       *CleanupResult
+	lastRun    *time.Time
 	lastReason string
 }
 
@@ -109,9 +121,10 @@ func New(statePath string, cfgFn func() config.Config, newClient func(config.Con
 }
 
 type persisted struct {
-	Last    *Record     `json:"last,omitempty"`
-	History []Record    `json:"history,omitempty"`
-	Refill  refillState `json:"refill"`
+	Last    *Record       `json:"last,omitempty"`
+	History []Record      `json:"history,omitempty"`
+	Refill  refillState   `json:"refill"`
+	Cleanup cleanupState  `json:"cleanup"`
 }
 
 func (s *Service) load() {
@@ -126,15 +139,20 @@ func (s *Service) load() {
 	s.last = p.Last
 	s.history = p.History
 	s.refill = p.Refill
+	s.cleanup = p.Cleanup
 	if s.last != nil {
 		t := s.last.Time
 		s.lastRun = &t
 		s.lastMode = s.last.Mode
 	}
+	if s.cleanup.last != nil {
+		t := s.cleanup.last.Time
+		s.cleanup.lastRun = &t
+	}
 }
 
 func (s *Service) saveLocked() {
-	p := persisted{Last: s.last, History: s.history, Refill: s.refill}
+	p := persisted{Last: s.last, History: s.history, Refill: s.refill, Cleanup: s.cleanup}
 	b, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return
@@ -201,12 +219,17 @@ func (s *Service) Run(ctx context.Context, mode string) (*Record, error) {
 	s.lastMode = mode
 	s.mu.Unlock()
 
+	s.appendEvent("巡检开始 mode=%s", mode)
 	started := time.Now()
 	rec := &Record{Time: started, Mode: mode}
 	err := s.runOnce(ctx, mode, rec)
 	rec.DurationMS = time.Since(started).Milliseconds()
 	if err != nil {
 		rec.Error = err.Error()
+		s.appendEvent("巡检失败 mode=%s err=%v", mode, err)
+	} else {
+		s.appendEvent("巡检完成 mode=%s total=%d healthy=%d rate_limited=%d dead=%d disabled=%d 耗时=%dms",
+			mode, rec.Total, rec.Healthy, rec.RateLimited, rec.Dead, rec.Disabled, rec.DurationMS)
 	}
 
 	s.mu.Lock()
@@ -224,6 +247,8 @@ func (s *Service) Run(ctx context.Context, mode string) (*Record, error) {
 	// Auto-refill evaluation happens after every successful patrol.
 	if err == nil {
 		s.evaluateRefill(rec)
+		// Optional: purge free-usage-exhausted accounts from the live pool.
+		s.maybeCleanupAfterPatrol()
 	}
 	return rec, nil
 }
@@ -234,11 +259,13 @@ func (s *Service) runOnce(ctx context.Context, mode string, rec *Record) error {
 		return fmt.Errorf("未配置 CPA_MANAGEMENT_KEY")
 	}
 	client := s.newClient(cfg)
+	s.appendEvent("拉取远端 auth-files…")
 	list, err := client.List()
 	if err != nil {
 		return fmt.Errorf("拉取远端列表失败: %v", err)
 	}
 	rec.Total = len(list)
+	s.appendEvent("远端列表 %d 条，开始分类 mode=%s", rec.Total, mode)
 
 	if mode != "deep" {
 		// Light: classify from list metadata only.
@@ -252,6 +279,8 @@ func (s *Service) runOnce(ctx context.Context, mode string, rec *Record) error {
 				rec.Healthy++
 			}
 		}
+		s.appendEvent("轻检分类完成 healthy=%d dead=%d disabled=%d",
+			rec.Healthy, rec.Dead, rec.Disabled)
 		return nil
 	}
 
@@ -303,6 +332,8 @@ func (s *Service) runOnce(ctx context.Context, mode string, rec *Record) error {
 		}()
 	}
 	wg.Wait()
+	s.appendEvent("深检完成 healthy=%d rate_limited=%d dead=%d disabled=%d",
+		rec.Healthy, rec.RateLimited, rec.Dead, rec.Disabled)
 	return nil
 }
 
@@ -320,8 +351,9 @@ func (s *Service) deepClassify(client ManagementAPI, m cpa.AuthMeta, proxy strin
 		return "healthy"
 	}
 	low := strings.ToLower(err.Error())
-	if strings.Contains(low, "rate/exhausted") || strings.Contains(low, "429") ||
-		strings.Contains(low, "free-usage-exhausted") || strings.Contains(low, "rate limit") {
+	// Keep historical bucket name rate_limited for UI, but prefer quota markers.
+	if cpa.IsQuotaExhausted("", low) || strings.Contains(low, "rate/exhausted") ||
+		strings.Contains(low, "429") || strings.Contains(low, "rate limit") {
 		return "rate_limited"
 	}
 	return "dead"

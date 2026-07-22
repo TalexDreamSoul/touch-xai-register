@@ -21,6 +21,16 @@ func (f *fakeMgmt) List() ([]cpa.AuthMeta, error) { return f.files, f.err }
 func (f *fakeMgmt) Download(name string) ([]byte, error) {
 	return json.Marshal(cpa.Document{AccessToken: "tok-" + name, Email: name})
 }
+func (f *fakeMgmt) Delete(name string) error {
+	out := f.files[:0]
+	for _, m := range f.files {
+		if m.Name != name {
+			out = append(out, m)
+		}
+	}
+	f.files = out
+	return nil
+}
 
 func testConfig(mut func(*config.Config)) func() config.Config {
 	return func() config.Config {
@@ -102,17 +112,38 @@ func TestDeepPatrol(t *testing.T) {
 
 func TestPatrolConcurrentRunRejected(t *testing.T) {
 	block := make(chan struct{})
+	done := make(chan struct{})
 	mgmt := &fakeMgmt{files: []cpa.AuthMeta{{Name: "a.json"}}}
 	s := newTestService(t, mgmt, testConfig(nil))
 	s.probeFn = func(doc cpa.Document, proxy string) error {
 		<-block
 		return nil
 	}
-	defer close(block)
-	go func() { _, _ = s.Run(context.Background(), "deep") }()
-	time.Sleep(50 * time.Millisecond)
+	go func() {
+		defer close(done)
+		_, _ = s.Run(context.Background(), "deep")
+	}()
+	// Wait until the first run has acquired the lock (probe blocks inside Run).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if s.Status().Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(block)
+			t.Fatal("first deep run did not become running")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if _, err := s.Run(context.Background(), "light"); err == nil {
+		close(block)
 		t.Fatal("expected concurrent run rejection")
+	}
+	close(block)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("deep run did not finish after unblock")
 	}
 }
 
