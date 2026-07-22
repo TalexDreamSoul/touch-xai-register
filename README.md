@@ -466,6 +466,24 @@ Grok-Register/
 
 ---
 
+## 持续批量补号（宿主脚本）
+
+面板内置的 `REFILL_*` 是「健康号低于阈值才补」。若需要**无条件持续每批 N 个**注册，并在每批结束后把 CPA zip 推到候补池 HTTP 接口，可用宿主脚本：
+
+- [`scripts/continuous-refill.sh`](./scripts/continuous-refill.sh) — 循环 start → wait → zip → upload
+- [`scripts/refill-watchdog.sh`](./scripts/refill-watchdog.sh) — 进程挂掉自动拉起
+- 配置模板：[`scripts/refill.env.example`](./scripts/refill.env.example)
+- 说明：[`docs/continuous-refill.md`](./docs/continuous-refill.md)
+
+```bash
+cp scripts/refill.env.example /tmp/touch-xai-refill/refill.env
+# 编辑 PANEL_URL / PANEL_TOKEN / CANDIDATE_* 
+set -a && source /tmp/touch-xai-refill/refill.env && set +a
+./scripts/continuous-refill.sh
+```
+
+---
+
 ## 常见问题
 
 **`make build` / `sudo make install` 报 go not found**
