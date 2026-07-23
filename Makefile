@@ -4,7 +4,7 @@ VERSION?=0.2.0-panel
 PREFIX?=/usr/local
 BINDIR=$(PREFIX)/bin
 
-.PHONY: help build install uninstall clean test run panel up down status docker-up docker-down docker-rebuild
+.PHONY: help build install uninstall clean test run panel panel-ui up down status docker-up docker-down docker-rebuild
 
 # Resolve go even when sudo drops PATH (mise /usr/local / home installs).
 GO ?= $(shell command -v go 2>/dev/null || true)
@@ -28,7 +28,8 @@ help:
 	@echo "  make status          # 健康检查 / 容器状态"
 	@echo ""
 	@echo "开发:"
-	@echo "  make build           # 编译 bin/grok"
+	@echo "  make panel-ui        # 构建 Next+Kumo → web/out"
+	@echo "  make build           # panel-ui + 编译 bin/grok"
 	@echo "  make panel           # 前台跑 panel（:8787）"
 	@echo "  make test            # go test ./..."
 	@echo ""
@@ -39,8 +40,12 @@ help:
 	@echo ""
 	@echo "安装:"
 	@echo "  make install         # 装到 $(BINDIR)/grok"
-
+# build embeds web/out; run `make panel-ui` when UI changes
 build:
+	@if [ ! -f web/out/index.html ]; then \
+		echo "[*] web/out missing → panel-ui"; \
+		$(MAKE) panel-ui; \
+	fi
 	@if [ -z "$(GO)" ] || [ ! -x "$(GO)" ]; then \
 		echo "错误: 找不到 go。请安装 Go 1.21+ 或把 go 加入 PATH。"; \
 		echo "  例: export PATH=\$$PATH:/usr/local/go/bin"; \
@@ -50,6 +55,19 @@ build:
 	@echo "[*] using $(GO)"
 	$(GO) build -ldflags "-s -w -X main.version=$(VERSION)" -o bin/$(APP) ./cmd/grok
 	@echo "[✓] bin/$(APP)"
+
+# Next.js + Cloudflare Kumo → web/out (embedded by Go)
+panel-ui:
+	@if [ ! -d panel/node_modules ]; then \
+		echo "[*] npm install (panel)"; \
+		cd panel && npm install; \
+	fi
+	@echo "[*] next build (static export)"
+	@cd panel && npm run build
+	@rm -rf web/out
+	@mkdir -p web
+	@cp -R panel/out web/out
+	@echo "[✓] web/out ready"
 
 panel: build
 	@echo "PANEL_TOKEN=$${PANEL_TOKEN:-} GROK_HOME=$${GROK_HOME:-$$HOME/.grok}"

@@ -28,8 +28,16 @@ vendor/
 __pycache__/
 *.pyc
 
+# Panel (Next.js)
+panel/node_modules/
+panel/.next/
+panel/out/
+
 # Logs / runtime
 *.log
 logs/
 data/
 .grok-home/
+
+# local agent
+.serena/

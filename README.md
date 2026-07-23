@@ -31,8 +31,17 @@ make docker-rebuild
 | 只要面板不要 Turnstile | `SKIP_TURNSTILE=1 make up` | 上传/导出/巡检可用，注册 mint 可能失败 |
 | 完整容器 | `make docker-up` | WARP+Privoxy+FlareSolverr+panel，数据在 volume `grok-data` |
 | CLI 注册 | `make build && ./bin/grok start -t 10` | 与 panel 共用 `GROK_HOME`（默认 `~/.grok`） |
+| UI 开发 | `cd panel && npm run dev` | Next+Kumo 热更；API 指向 `API_PROXY_TARGET`（默认 :8787） |
 
-面板能力：注册流水线 · 凭证上传 · 分批导出 · 号池巡检/清理 · 自动补号。服务器细节见 `DEPLOY.md`。
+面板 UI 为 **Next.js + Cloudflare Kumo**（无自写 CSS），`make build` 会先 `panel-ui` 再嵌入 Go 二进制。
+
+### 主从调度（联邦）
+
+1. **主节点**：设置页 / 主从页 → 角色 `master`，设定 `号池维持数量`、单次分配 1–10、可选联邦密钥。  
+   公网可读：`GET /api/federation/info`（可选 `X-Cluster-Token`）。
+2. **从节点**：角色 `slave`，填主节点 URL + 同一密钥 → 自动心跳。  
+   主节点按缺口分配 1–10；从节点自动 `start`，跑完后可自动上传。
+3. 主节点「主从」页可看在线从节点列表、踢出节点。
 
 ```bash
 # CLI 速查

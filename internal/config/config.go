@@ -82,6 +82,19 @@ type Config struct {
 	CleanupOnPatrol     bool // run after each successful patrol
 	CleanupBackup       bool // download before delete
 	CleanupDryRun       bool // scan + report only
+
+	// Cluster / federation (master–slave pool orchestration)
+	// Role: standalone | master | slave
+	ClusterRole         string
+	ClusterNodeName     string
+	ClusterPublicToken  string // optional shared secret for federation endpoints
+	ClusterMasterURL    string // slave → master base URL, e.g. https://panel.example.com
+	ClusterHeartbeatSec int    // slave poll interval
+	ClusterPoolTarget   int    // master desired healthy pool size
+	ClusterAssignMin    int    // per-slave assign lower bound (1-10)
+	ClusterAssignMax    int    // per-slave assign upper bound (1-10)
+	ClusterAutoRegister bool   // slave auto start pipeline when assigned
+	ClusterAutoUpload   bool   // slave upload CPA after batch
 }
 
 func Defaults() Config {
@@ -132,6 +145,13 @@ func Defaults() Config {
 		CleanupOnPatrol:       true,
 		CleanupBackup:         true,
 		CleanupDryRun:         false,
+		ClusterRole:           "standalone",
+		ClusterHeartbeatSec:   15,
+		ClusterPoolTarget:     50,
+		ClusterAssignMin:      1,
+		ClusterAssignMax:      10,
+		ClusterAutoRegister:   true,
+		ClusterAutoUpload:     true,
 	}
 }
 
@@ -201,6 +221,16 @@ func Save(path string, cfg Config) error {
 	b.WriteString(fmt.Sprintf("CLEANUP_ON_PATROL=%s\n", bool01(cfg.CleanupOnPatrol)))
 	b.WriteString(fmt.Sprintf("CLEANUP_BACKUP=%s\n", bool01(cfg.CleanupBackup)))
 	b.WriteString(fmt.Sprintf("CLEANUP_DRY_RUN=%s\n", bool01(cfg.CleanupDryRun)))
+	b.WriteString(fmt.Sprintf("CLUSTER_ROLE=%s\n", cfg.ClusterRole))
+	b.WriteString(fmt.Sprintf("CLUSTER_NODE_NAME=%s\n", cfg.ClusterNodeName))
+	// CLUSTER_PUBLIC_TOKEN: written via appendEnvKey when set from panel
+	b.WriteString(fmt.Sprintf("CLUSTER_MASTER_URL=%s\n", cfg.ClusterMasterURL))
+	b.WriteString(fmt.Sprintf("CLUSTER_HEARTBEAT_SEC=%d\n", cfg.ClusterHeartbeatSec))
+	b.WriteString(fmt.Sprintf("CLUSTER_POOL_TARGET=%d\n", cfg.ClusterPoolTarget))
+	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MIN=%d\n", cfg.ClusterAssignMin))
+	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MAX=%d\n", cfg.ClusterAssignMax))
+	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_REGISTER=%s\n", bool01(cfg.ClusterAutoRegister)))
+	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_UPLOAD=%s\n", bool01(cfg.ClusterAutoUpload)))
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -434,6 +464,44 @@ func applyMap(cfg *Config, env map[string]string) {
 	}
 	if v, ok := env["CLEANUP_DRY_RUN"]; ok {
 		cfg.CleanupDryRun = truthy(v)
+	}
+	if v, ok := env["CLUSTER_ROLE"]; ok {
+		cfg.ClusterRole = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, ok := env["CLUSTER_NODE_NAME"]; ok {
+		cfg.ClusterNodeName = v
+	}
+	if v, ok := env["CLUSTER_PUBLIC_TOKEN"]; ok {
+		cfg.ClusterPublicToken = v
+	}
+	if v, ok := env["CLUSTER_MASTER_URL"]; ok {
+		cfg.ClusterMasterURL = strings.TrimRight(strings.TrimSpace(v), "/")
+	}
+	if v, ok := env["CLUSTER_HEARTBEAT_SEC"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ClusterHeartbeatSec = n
+		}
+	}
+	if v, ok := env["CLUSTER_POOL_TARGET"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ClusterPoolTarget = n
+		}
+	}
+	if v, ok := env["CLUSTER_ASSIGN_MIN"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ClusterAssignMin = n
+		}
+	}
+	if v, ok := env["CLUSTER_ASSIGN_MAX"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ClusterAssignMax = n
+		}
+	}
+	if v, ok := env["CLUSTER_AUTO_REGISTER"]; ok {
+		cfg.ClusterAutoRegister = truthy(v)
+	}
+	if v, ok := env["CLUSTER_AUTO_UPLOAD"]; ok {
+		cfg.ClusterAutoUpload = truthy(v)
 	}
 }
 

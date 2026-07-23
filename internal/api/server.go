@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/grok-free-register/grok-reg/internal/cluster"
 	"github.com/grok-free-register/grok-reg/internal/config"
 	"github.com/grok-free-register/grok-reg/internal/cpa"
 	"github.com/grok-free-register/grok-reg/internal/daemon"
@@ -38,6 +39,7 @@ type Server struct {
 	mux      *http.ServeMux
 	transfer *transfer.Service
 	patrol   *patrol.Service
+	cluster  *cluster.Service
 }
 
 func New(opt Options) *Server {
@@ -67,6 +69,31 @@ func New(opt Options) *Server {
 			return err
 		})
 	s.patrol.SetPipelineChecker(s.pipelineRunning)
+	s.cluster = cluster.New(opt.Paths.ClusterState, func() config.Config {
+		cfg, _ := config.Load(opt.Paths.Config)
+		return cfg
+	})
+	s.cluster.SetPoolProvider(func() cluster.PoolSnapshot {
+		o := s.patrol.Overview()
+		return cluster.PoolSnapshot{
+			Healthy:       o.Healthy,
+			RateLimited:   o.RateLimited,
+			Dead:          o.Dead,
+			Disabled:      o.Disabled,
+			Total:         o.Total,
+			QuotaEstimate: o.QuotaEstimate,
+		}
+	})
+	s.cluster.SetStartFn(func(target int) error {
+		_, _, _, err := s.ensurePipelineStart(target)
+		return err
+	})
+	s.cluster.SetRunningFn(s.pipelineRunning)
+	s.cluster.SetUploadFn(func() (int, int, error) {
+		// Best-effort: slaves still use panel CPA auto-upload when enabled;
+		// report zeros here — full batch upload is via grok upload / transfer.
+		return 0, 0, nil
+	})
 	s.routes()
 	return s
 }
@@ -111,6 +138,7 @@ func (s *Server) ListenAndServe() error {
 	s.transfer.UploadJobs.StartPruner(bgCtx, 15*time.Minute)
 	s.transfer.ExportJobs.StartPruner(bgCtx, 15*time.Minute)
 	s.patrol.Start(bgCtx)
+	s.cluster.Start(bgCtx)
 
 	// Graceful shutdown: cancel running jobs, flush the upload cache.
 	sigCh := make(chan os.Signal, 1)
@@ -176,20 +204,47 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/pool/logs", s.handlePoolLogs)
 	s.mux.HandleFunc("POST /api/pool/cleanup", s.handlePoolCleanup)
 
+	// cluster / federation (master–slave)
+	// Public federation endpoints: auth via CLUSTER_PUBLIC_TOKEN (optional), not PANEL_TOKEN.
+	s.mux.HandleFunc("GET /api/federation/info", s.handleFederationInfo)
+	s.mux.HandleFunc("POST /api/federation/heartbeat", s.handleFederationHeartbeat)
+	s.mux.HandleFunc("POST /api/federation/report", s.handleFederationReport)
+	// Admin (panel token)
+	s.mux.HandleFunc("GET /api/cluster/status", s.handleClusterStatus)
+	s.mux.HandleFunc("POST /api/cluster/kick", s.handleClusterKick)
+
 	if s.opt.WebFS != nil {
-		fileServer := http.FileServer(http.FS(s.opt.WebFS))
+		// Next export lives under out/ inside embed.FS
+		staticRoot := s.opt.WebFS
+		if sub, err := fs.Sub(s.opt.WebFS, "out"); err == nil {
+			staticRoot = sub
+		}
 		s.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/" && r.URL.Path != "/index.html" {
-				// SPA-ish: only serve known static; else fall through to index
-				path := strings.TrimPrefix(r.URL.Path, "/")
-				if f, err := s.opt.WebFS.Open(path); err == nil {
-					_ = f.Close()
-					fileServer.ServeHTTP(w, r)
-					return
-				}
+			path := strings.TrimPrefix(r.URL.Path, "/")
+			if path == "" || path == "/" {
+				path = "index.html"
 			}
-			// always serve index for /
-			data, err := fs.ReadFile(s.opt.WebFS, "index.html")
+			// Prefer explicit files over FileServer redirects (Next uses trailingSlash).
+			candidates := []string{path}
+			if strings.HasSuffix(path, "/") {
+				candidates = append(candidates, path+"index.html")
+			} else {
+				candidates = append(candidates, path+"/index.html", path+".html")
+			}
+			// _next static assets keep exact path
+			for _, candidate := range candidates {
+				candidate = strings.TrimPrefix(candidate, "/")
+				data, err := fs.ReadFile(staticRoot, candidate)
+				if err != nil {
+					continue
+				}
+				ctype := contentTypeFor(candidate)
+				w.Header().Set("Content-Type", ctype)
+				_, _ = w.Write(data)
+				return
+			}
+			// SPA fallback
+			data, err := fs.ReadFile(staticRoot, "index.html")
 			if err != nil {
 				http.Error(w, "panel missing", 500)
 				return
@@ -220,9 +275,11 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// health + all static panel assets always open so the login form can
-		// load; only /api/* is protected.
-		if r.URL.Path == "/api/health" || !strings.HasPrefix(r.URL.Path, "/api/") {
+		// health + static panel assets always open so the login form can load.
+		// Federation endpoints use optional CLUSTER_PUBLIC_TOKEN instead of PANEL_TOKEN.
+		if r.URL.Path == "/api/health" ||
+			strings.HasPrefix(r.URL.Path, "/api/federation/") ||
+			!strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -714,6 +771,16 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"cleanup_on_patrol":            cfg.CleanupOnPatrol,
 		"cleanup_backup":               cfg.CleanupBackup,
 		"cleanup_dry_run":              cfg.CleanupDryRun,
+		"cluster_role":                 cfg.ClusterRole,
+		"cluster_node_name":            cfg.ClusterNodeName,
+		"cluster_public_token_set":     strings.TrimSpace(cfg.ClusterPublicToken) != "",
+		"cluster_master_url":           cfg.ClusterMasterURL,
+		"cluster_heartbeat_sec":        cfg.ClusterHeartbeatSec,
+		"cluster_pool_target":          cfg.ClusterPoolTarget,
+		"cluster_assign_min":           cfg.ClusterAssignMin,
+		"cluster_assign_max":           cfg.ClusterAssignMax,
+		"cluster_auto_register":        cfg.ClusterAutoRegister,
+		"cluster_auto_upload":          cfg.ClusterAutoUpload,
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "config": view})
 }
@@ -757,6 +824,17 @@ type configUpdate struct {
 	CleanupOnPatrol     *bool `json:"cleanup_on_patrol"`
 	CleanupBackup       *bool `json:"cleanup_backup"`
 	CleanupDryRun       *bool `json:"cleanup_dry_run"`
+
+	ClusterRole         *string `json:"cluster_role"`
+	ClusterNodeName     *string `json:"cluster_node_name"`
+	ClusterPublicToken  *string `json:"cluster_public_token"`
+	ClusterMasterURL    *string `json:"cluster_master_url"`
+	ClusterHeartbeatSec *int    `json:"cluster_heartbeat_sec"`
+	ClusterPoolTarget   *int    `json:"cluster_pool_target"`
+	ClusterAssignMin    *int    `json:"cluster_assign_min"`
+	ClusterAssignMax    *int    `json:"cluster_assign_max"`
+	ClusterAutoRegister *bool   `json:"cluster_auto_register"`
+	ClusterAutoUpload   *bool   `json:"cluster_auto_upload"`
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -879,6 +957,33 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if u.CleanupDryRun != nil {
 		cfg.CleanupDryRun = *u.CleanupDryRun
 	}
+	if u.ClusterRole != nil {
+		cfg.ClusterRole = strings.ToLower(strings.TrimSpace(*u.ClusterRole))
+	}
+	if u.ClusterNodeName != nil {
+		cfg.ClusterNodeName = strings.TrimSpace(*u.ClusterNodeName)
+	}
+	if u.ClusterMasterURL != nil {
+		cfg.ClusterMasterURL = strings.TrimRight(strings.TrimSpace(*u.ClusterMasterURL), "/")
+	}
+	if u.ClusterHeartbeatSec != nil {
+		cfg.ClusterHeartbeatSec = *u.ClusterHeartbeatSec
+	}
+	if u.ClusterPoolTarget != nil {
+		cfg.ClusterPoolTarget = *u.ClusterPoolTarget
+	}
+	if u.ClusterAssignMin != nil {
+		cfg.ClusterAssignMin = *u.ClusterAssignMin
+	}
+	if u.ClusterAssignMax != nil {
+		cfg.ClusterAssignMax = *u.ClusterAssignMax
+	}
+	if u.ClusterAutoRegister != nil {
+		cfg.ClusterAutoRegister = *u.ClusterAutoRegister
+	}
+	if u.ClusterAutoUpload != nil {
+		cfg.ClusterAutoUpload = *u.ClusterAutoUpload
+	}
 	if err := config.Save(s.opt.Paths.Config, cfg); err != nil {
 		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -886,6 +991,9 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	// re-read key into env file manually if set (Save skips writing key)
 	if u.CPAManagementKey != nil && *u.CPAManagementKey != "" {
 		_ = appendEnvKey(s.opt.Paths.Config, "CPA_MANAGEMENT_KEY", *u.CPAManagementKey)
+	}
+	if u.ClusterPublicToken != nil {
+		_ = appendEnvKey(s.opt.Paths.Config, "CLUSTER_PUBLIC_TOKEN", *u.ClusterPublicToken)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
@@ -961,3 +1069,27 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 // Shutdown helper for tests.
 func IdleContext() context.Context { return context.Background() }
+
+
+func contentTypeFor(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".html"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(path, ".js"):
+		return "application/javascript; charset=utf-8"
+	case strings.HasSuffix(path, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(path, ".json"):
+		return "application/json; charset=utf-8"
+	case strings.HasSuffix(path, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(path, ".png"):
+		return "image/png"
+	case strings.HasSuffix(path, ".woff2"):
+		return "font/woff2"
+	case strings.HasSuffix(path, ".txt"):
+		return "text/plain; charset=utf-8"
+	default:
+		return "application/octet-stream"
+	}
+}

@@ -14,18 +14,19 @@ const (
 
 // Paths holds all filesystem locations under GROK_HOME.
 type Paths struct {
-	Root        string
-	Config      string
-	PID         string
-	Lock        string
-	State       string
-	LogsDir     string
-	Outputs     string
-	ExportsDir  string // export job zip volumes
-	UploadCache string // upload dedup cache json
-	PatrolState string // pool patrol snapshot json
-	TmpDir      string // multipart upload temp files
-	Clearance   string // optional: bundled compose path override
+	Root         string
+	Config       string
+	PID          string
+	Lock         string
+	State        string
+	LogsDir      string
+	Outputs      string
+	ExportsDir   string // export job zip volumes
+	UploadCache  string // upload dedup cache json
+	PatrolState  string // pool patrol snapshot json
+	ClusterState string // federation node registry / meta
+	TmpDir       string // multipart upload temp files
+	Clearance    string // optional: bundled compose path override
 }
 
 func Resolve() (Paths, error) {
@@ -42,17 +43,18 @@ func Resolve() (Paths, error) {
 		return Paths{}, err
 	}
 	p := Paths{
-		Root:        root,
-		Config:      filepath.Join(root, "config.env"),
-		PID:         filepath.Join(root, "run.pid"),
-		Lock:        filepath.Join(root, "run.lock"),
-		State:       filepath.Join(root, "state.json"),
-		LogsDir:     filepath.Join(root, "logs"),
-		Outputs:     filepath.Join(root, "outputs"),
-		ExportsDir:  filepath.Join(root, "exports"),
-		UploadCache: filepath.Join(root, "upload-cache.json"),
-		PatrolState: filepath.Join(root, "patrol-state.json"),
-		TmpDir:      filepath.Join(root, "tmp"),
+		Root:         root,
+		Config:       filepath.Join(root, "config.env"),
+		PID:          filepath.Join(root, "run.pid"),
+		Lock:         filepath.Join(root, "run.lock"),
+		State:        filepath.Join(root, "state.json"),
+		LogsDir:      filepath.Join(root, "logs"),
+		Outputs:      filepath.Join(root, "outputs"),
+		ExportsDir:   filepath.Join(root, "exports"),
+		UploadCache:  filepath.Join(root, "upload-cache.json"),
+		PatrolState:  filepath.Join(root, "patrol-state.json"),
+		ClusterState: filepath.Join(root, "cluster-state.json"),
+		TmpDir:       filepath.Join(root, "tmp"),
 	}
 	return p, nil
 }

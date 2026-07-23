@@ -2,7 +2,8 @@ package web
 
 import "embed"
 
-// FS holds the panel static assets (index.html, app.js, styles.css).
+// FS is the static panel assets (Next.js + Cloudflare Kumo export).
+// Root contains index.html, _next/, and app routes.
 //
-//go:embed index.html app.js styles.css
+//go:embed all:out/*
 var FS embed.FS
