@@ -227,6 +227,8 @@ func (s *Server) routes() {
 	// pool: remote list + connectivity + patrol
 	s.mux.HandleFunc("POST /api/pool/test-connection", s.handlePoolTestConnection)
 	s.mux.HandleFunc("GET /api/pool/files", s.handlePoolFiles)
+	s.mux.HandleFunc("GET /api/pool/list", s.handleUnifiedPoolList)
+	s.mux.HandleFunc("GET /api/pool/pull", s.handleUnifiedPoolPull)
 	s.mux.HandleFunc("GET /api/pool/overview", s.handlePoolOverview)
 	s.mux.HandleFunc("POST /api/pool/patrol", s.handlePoolPatrol)
 	s.mux.HandleFunc("GET /api/pool/patrol/history", s.handlePoolPatrolHistory)
@@ -238,6 +240,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/federation/info", s.handleFederationInfo)
 	s.mux.HandleFunc("POST /api/federation/heartbeat", s.handleFederationHeartbeat)
 	s.mux.HandleFunc("POST /api/federation/report", s.handleFederationReport)
+	s.mux.HandleFunc("GET /api/federation/pool", s.handleFederationPoolList)
+	s.mux.HandleFunc("GET /api/federation/pool/pull", s.handleFederationPoolPull)
 	s.mux.HandleFunc("GET /api/public/status", s.handlePublicStatus)
 	s.mux.HandleFunc("POST /api/public/status", s.handlePublicStatus)
 	s.mux.HandleFunc("GET /api/public/status.json", s.handlePublicStatusJSON)
@@ -837,6 +841,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"cluster_assign_max":           cfg.ClusterAssignMax,
 		"cluster_auto_register":        cfg.ClusterAutoRegister,
 		"cluster_auto_upload":          cfg.ClusterAutoUpload,
+		"cluster_share_pool_list":       cfg.ClusterSharePoolList,
+		"cluster_share_pool_pull":       cfg.ClusterSharePoolPull,
 		"local_pool_auto_import":       cfg.LocalPoolAutoImport,
 		"local_pool_auto_sync":         cfg.LocalPoolAutoSync,
 	}
@@ -895,6 +901,8 @@ type configUpdate struct {
 	ClusterAssignMax      *int    `json:"cluster_assign_max"`
 	ClusterAutoRegister   *bool   `json:"cluster_auto_register"`
 	ClusterAutoUpload     *bool   `json:"cluster_auto_upload"`
+	ClusterSharePoolList  *bool   `json:"cluster_share_pool_list"`
+	ClusterSharePoolPull  *bool   `json:"cluster_share_pool_pull"`
 
 	LocalPoolAutoImport *bool `json:"local_pool_auto_import"`
 	LocalPoolAutoSync   *bool `json:"local_pool_auto_sync"`
@@ -1058,6 +1066,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.ClusterAutoUpload != nil {
 		cfg.ClusterAutoUpload = *u.ClusterAutoUpload
+	}
+	if u.ClusterSharePoolList != nil {
+		cfg.ClusterSharePoolList = *u.ClusterSharePoolList
+	}
+	if u.ClusterSharePoolPull != nil {
+		cfg.ClusterSharePoolPull = *u.ClusterSharePoolPull
 	}
 	if u.ClusterStatusPassword != nil {
 		cfg.ClusterStatusPassword = *u.ClusterStatusPassword

@@ -33,6 +33,8 @@ export default function ClusterPage() {
   const [heartbeat, setHeartbeat] = useState("15");
   const [autoRegister, setAutoRegister] = useState(true);
   const [autoUpload, setAutoUpload] = useState(true);
+  const [sharePoolList, setSharePoolList] = useState(false);
+  const [sharePoolPull, setSharePoolPull] = useState(false);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [pubInfo, setPubInfo] = useState("");
@@ -56,6 +58,8 @@ export default function ClusterPage() {
     setHeartbeat(String(c.cluster_heartbeat_sec ?? 15));
     setAutoRegister(c.cluster_auto_register !== false);
     setAutoUpload(c.cluster_auto_upload !== false);
+    setSharePoolList(c.cluster_share_pool_list === true);
+    setSharePoolPull(c.cluster_share_pool_pull === true);
   }
 
   useEffect(() => {
@@ -84,6 +88,8 @@ export default function ClusterPage() {
         cluster_heartbeat_sec: parseInt(heartbeat, 10) || 15,
         cluster_auto_register: autoRegister,
         cluster_auto_upload: autoUpload,
+        cluster_share_pool_list: sharePoolList,
+        cluster_share_pool_pull: sharePoolPull,
       };
       // keep legacy single field as first line
       const first = masterURLs
@@ -238,6 +244,27 @@ export default function ClusterPage() {
                 checked={autoUpload}
                 onCheckedChange={(v) => setAutoUpload(!!v)}
               />
+              <Switch
+                label="允许联邦查看号池列表（主）"
+                checked={sharePoolList}
+                onCheckedChange={(v) => {
+                  const on = !!v;
+                  setSharePoolList(on);
+                  if (!on) setSharePoolPull(false);
+                }}
+              />
+              <Switch
+                label="允许联邦拉取/下载凭证（主）"
+                checked={sharePoolPull}
+                onCheckedChange={(v) => {
+                  const on = !!v;
+                  setSharePoolPull(on);
+                  if (on) setSharePoolList(true);
+                }}
+              />
+              <Text size="xs" variant="secondary">
+                分享开关仅主节点生效：列表只暴露元数据；拉取会下载 JSON 凭证。
+              </Text>
             </div>
           </LayerCard.Primary>
         </LayerCard>

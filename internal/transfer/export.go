@@ -635,7 +635,13 @@ func (s *Service) TestConnection(baseURL, key string) (int, string, error) {
 }
 
 // ListRemote fetches the slim remote list; limited unless force.
+// page is 1-based when force; pageSize defaults/caps at 50 (legacy) or 100 when page>0.
 func (s *Service) ListRemote(baseURL, key string, force bool, limit int) ([]cpa.AuthMeta, int, error) {
+	return s.ListRemotePage(baseURL, key, force, 1, limit)
+}
+
+// ListRemotePage pages the remote auth-files list (1-based page).
+func (s *Service) ListRemotePage(baseURL, key string, force bool, page, pageSize int) ([]cpa.AuthMeta, int, error) {
 	conn := s.ResolveConnection(baseURL, key)
 	if conn.Key == "" {
 		return nil, 0, fmt.Errorf("未配置 Management Key")
@@ -650,11 +656,22 @@ func (s *Service) ListRemote(baseURL, key string, force bool, limit int) ([]cpa.
 	if !force {
 		return nil, total, nil
 	}
-	if limit <= 0 || limit > 50 {
-		limit = 50
+	if page < 1 {
+		page = 1
 	}
-	if len(list) > limit {
-		list = list[:limit]
+	if pageSize <= 0 {
+		pageSize = 50
 	}
-	return list, total, nil
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	start := (page - 1) * pageSize
+	if start >= total {
+		return []cpa.AuthMeta{}, total, nil
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return list[start:end], total, nil
 }

@@ -98,6 +98,9 @@ type Config struct {
 	ClusterAutoUpload   bool   // slave upload CPA after batch
 	// Public status page (human-facing), independent from ClusterPublicToken
 	ClusterStatusPassword string // empty = open; set to require password on /status
+	// Federation pool share (master-side ACL for slaves/peers)
+	ClusterSharePoolList bool // allow list formal CPA pool over federation token
+	ClusterSharePoolPull bool // allow download credentials over federation token
 
 	// Local pool (register results)
 	LocalPoolAutoImport bool // after register, copy CPA json into GROK_HOME/local-pool
@@ -159,6 +162,8 @@ func Defaults() Config {
 		ClusterAssignMax:      10,
 		ClusterAutoRegister:   true,
 		ClusterAutoUpload:     true,
+		ClusterSharePoolList:  false,
+		ClusterSharePoolPull:  false,
 		LocalPoolAutoImport:   true,
 		LocalPoolAutoSync:     false,
 	}
@@ -241,6 +246,8 @@ func Save(path string, cfg Config) error {
 	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MAX=%d\n", cfg.ClusterAssignMax))
 	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_REGISTER=%s\n", bool01(cfg.ClusterAutoRegister)))
 	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_UPLOAD=%s\n", bool01(cfg.ClusterAutoUpload)))
+	b.WriteString(fmt.Sprintf("CLUSTER_SHARE_POOL_LIST=%s\n", bool01(cfg.ClusterSharePoolList)))
+	b.WriteString(fmt.Sprintf("CLUSTER_SHARE_POOL_PULL=%s\n", bool01(cfg.ClusterSharePoolPull)))
 	b.WriteString(fmt.Sprintf("LOCAL_POOL_AUTO_IMPORT=%s\n", bool01(cfg.LocalPoolAutoImport)))
 	b.WriteString(fmt.Sprintf("LOCAL_POOL_AUTO_SYNC=%s\n", bool01(cfg.LocalPoolAutoSync)))
 	// CLUSTER_STATUS_PASSWORD via appendEnvKey when set from panel
@@ -521,6 +528,12 @@ func applyMap(cfg *Config, env map[string]string) {
 	}
 	if v, ok := env["CLUSTER_AUTO_UPLOAD"]; ok {
 		cfg.ClusterAutoUpload = truthy(v)
+	}
+	if v, ok := env["CLUSTER_SHARE_POOL_LIST"]; ok {
+		cfg.ClusterSharePoolList = truthy(v)
+	}
+	if v, ok := env["CLUSTER_SHARE_POOL_PULL"]; ok {
+		cfg.ClusterSharePoolPull = truthy(v)
 	}
 	if v, ok := env["LOCAL_POOL_AUTO_IMPORT"]; ok {
 		cfg.LocalPoolAutoImport = truthy(v)

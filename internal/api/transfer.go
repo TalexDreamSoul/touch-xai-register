@@ -223,8 +223,17 @@ func (s *Server) handlePoolTestConnection(w http.ResponseWriter, r *http.Request
 func (s *Server) handlePoolFiles(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	force := q.Get("force") == "1" || q.Get("force") == "true"
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	list, total, err := s.transfer.ListRemote("", "", force, limit)
+	page, pageSize := parsePage(r, 1, 10, 100)
+	// legacy limit= without page still works via pageSize
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pageSize = n
+			if pageSize > 100 {
+				pageSize = 100
+			}
+		}
+	}
+	list, total, err := s.transfer.ListRemotePage("", "", force, page, pageSize)
 	if err != nil {
 		writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -232,9 +241,17 @@ func (s *Server) handlePoolFiles(w http.ResponseWriter, r *http.Request) {
 	if !force {
 		writeJSON(w, 200, map[string]any{
 			"ok": true, "total": total, "disabled": true,
-			"message": "全量列表默认禁用，使用 ?force=1&limit=50 获取样本",
+			"message": "全量列表默认禁用，使用 ?force=1&page=1&limit=10 获取",
 		})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "total": total, "files": list})
+	writeJSON(w, 200, map[string]any{
+		"ok":          true,
+		"total":       total,
+		"files":       list,
+		"page":        page,
+		"page_size":   pageSize,
+		"total_pages": pageCount(total, pageSize),
+		"source":      "cloud",
+	})
 }

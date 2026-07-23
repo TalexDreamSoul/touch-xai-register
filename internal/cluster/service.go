@@ -92,9 +92,11 @@ type PublicInfo struct {
 	Pool         PoolSnapshot `json:"pool"`
 	AssignMin    int          `json:"assign_min"`
 	AssignMax    int          `json:"assign_max"`
-	SlavesOnline int          `json:"slaves_online"`
-	SlavesTotal  int          `json:"slaves_total"`
-	Time         string       `json:"time"`
+	SlavesOnline   int          `json:"slaves_online"`
+	SlavesTotal    int          `json:"slaves_total"`
+	SharePoolList  bool         `json:"share_pool_list"`
+	SharePoolPull  bool         `json:"share_pool_pull"`
+	Time           string       `json:"time"`
 }
 
 // StatusPage is the human-facing public status board (gated by ClusterStatusPassword).
@@ -142,6 +144,8 @@ type Status struct {
 	AssignMax         int          `json:"assign_max"`
 	AutoRegister      bool         `json:"auto_register"`
 	AutoUpload        bool         `json:"auto_upload"`
+	SharePoolList     bool         `json:"share_pool_list"`
+	SharePoolPull     bool         `json:"share_pool_pull"`
 	SlaveConnected    bool         `json:"slave_connected"`
 	SlaveLastError    string       `json:"slave_last_error,omitempty"`
 	SlaveLastOK       *time.Time   `json:"slave_last_ok,omitempty"`
@@ -267,9 +271,11 @@ func (s *Service) PublicInfo(token string) (PublicInfo, int, string) {
 		Pool:         pool,
 		AssignMin:    clamp(cfg.ClusterAssignMin, 1, 10),
 		AssignMax:    clamp(cfg.ClusterAssignMax, 1, 10),
-		SlavesOnline: online,
-		SlavesTotal:  total,
-		Time:         time.Now().UTC().Format(time.RFC3339),
+		SlavesOnline:  online,
+		SlavesTotal:   total,
+		SharePoolList: cfg.ClusterSharePoolList,
+		SharePoolPull: cfg.ClusterSharePoolPull,
+		Time:          time.Now().UTC().Format(time.RFC3339),
 	}, 0, ""
 }
 
@@ -459,6 +465,8 @@ func (s *Service) Status() Status {
 		AssignMax:         clamp(cfg.ClusterAssignMax, 1, 10),
 		AutoRegister:      cfg.ClusterAutoRegister,
 		AutoUpload:        cfg.ClusterAutoUpload,
+		SharePoolList:     cfg.ClusterSharePoolList,
+		SharePoolPull:     cfg.ClusterSharePoolPull,
 		SlaveConnected:    s.slaveConnected,
 		SlaveLastError:    s.slaveLastErr,
 		LastAssign:        s.lastAssign,

@@ -117,6 +117,8 @@ export type ClusterStatus = {
   assign_max: number;
   auto_register: boolean;
   auto_upload: boolean;
+  share_pool_list?: boolean;
+  share_pool_pull?: boolean;
   slave_connected: boolean;
   slave_last_error?: string;
   slave_last_ok?: string;
