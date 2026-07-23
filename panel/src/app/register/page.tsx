@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge, Button, Input, LayerCard, Switch, Text } from "@cloudflare/kumo";
 import { AdminShell } from "@/components/admin-shell";
 import { PageHeader } from "@/components/page-header";
@@ -23,13 +23,78 @@ type PoolItem = {
   sync_error?: string;
 };
 
+const PAGE_SIZE = 10;
+
+function Pager({
+  page,
+  totalPages,
+  total,
+  label,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  label: string;
+  onChange: (p: number) => void;
+}) {
+  if (total <= 0) return null;
+  const pages = Math.max(1, totalPages);
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-kumo-hairline pt-3">
+      <Text size="xs" variant="secondary">
+        {label} · 共 {total} · 第 {page}/{pages} 页
+      </Text>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={page <= 1}
+          onClick={() => onChange(1)}
+        >
+          首页
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={page <= 1}
+          onClick={() => onChange(page - 1)}
+        >
+          上一页
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={page >= pages}
+          onClick={() => onChange(page + 1)}
+        >
+          下一页
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={page >= pages}
+          onClick={() => onChange(pages)}
+        >
+          末页
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function RegisterPage() {
   const [target, setTarget] = useState("10");
   const [status, setStatus] = useState<RunStatus | null>(null);
   const [log, setLog] = useState("");
   const [runs, setRuns] = useState<RunInfo[]>([]);
+  const [runsTotal, setRunsTotal] = useState(0);
+  const [runsTotalPages, setRunsTotalPages] = useState(0);
+  const [runsPage, setRunsPage] = useState(1);
   const [pool, setPool] = useState<PoolItem[]>([]);
   const [poolTotal, setPoolTotal] = useState(0);
+  const [poolTotalPages, setPoolTotalPages] = useState(0);
+  const [poolPage, setPoolPage] = useState(1);
   const [poolUnsynced, setPoolUnsynced] = useState(0);
   const [autoImport, setAutoImport] = useState(true);
   const [autoSync, setAutoSync] = useState(false);
@@ -41,27 +106,17 @@ export default function RegisterPage() {
     [status],
   );
 
-  async function refresh() {
+  const refreshCore = useCallback(async () => {
     try {
-      const [st, lg, rs, lp, cfg] = await Promise.all([
+      const [st, lg, cfg] = await Promise.all([
         api<{ status: RunStatus }>("/api/status"),
         api<{ log?: string }>("/api/logs?tail=300"),
-        api<{ runs?: RunInfo[] }>("/api/runs?limit=12"),
-        api<{
-          items?: PoolItem[];
-          total?: number;
-          unsynced?: number;
-        }>("/api/local-pool").catch(() => ({ items: [], total: 0, unsynced: 0 })),
         api<{ config?: Record<string, unknown> }>("/api/config").catch(() => ({
           config: {} as Record<string, unknown>,
         })),
       ]);
       setStatus(st.status);
       setLog(lg.log || "");
-      setRuns(rs.runs || []);
-      setPool(lp.items || []);
-      setPoolTotal(lp.total || 0);
-      setPoolUnsynced(lp.unsynced || 0);
       const conf = cfg.config || {};
       if (typeof conf.local_pool_auto_import === "boolean") {
         setAutoImport(conf.local_pool_auto_import);
@@ -72,13 +127,73 @@ export default function RegisterPage() {
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "刷新失败");
     }
-  }
+  }, []);
+
+  const refreshRuns = useCallback(async (page: number) => {
+    try {
+      const rs = await api<{
+        runs?: RunInfo[];
+        total?: number;
+        page?: number;
+        total_pages?: number;
+      }>(`/api/runs?page=${page}&limit=${PAGE_SIZE}`);
+      setRuns(rs.runs || []);
+      setRunsTotal(rs.total || 0);
+      setRunsTotalPages(rs.total_pages || 0);
+      if (rs.page && rs.page !== page) setRunsPage(rs.page);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "加载注册结果失败");
+    }
+  }, []);
+
+  const refreshPool = useCallback(async (page: number) => {
+    try {
+      const lp = await api<{
+        items?: PoolItem[];
+        total?: number;
+        unsynced?: number;
+        page?: number;
+        total_pages?: number;
+      }>(`/api/local-pool?page=${page}&limit=${PAGE_SIZE}`).catch(() => ({
+        items: [],
+        total: 0,
+        unsynced: 0,
+        page: 1,
+        total_pages: 0,
+      }));
+      setPool(lp.items || []);
+      setPoolTotal(lp.total || 0);
+      setPoolUnsynced(lp.unsynced || 0);
+      setPoolTotalPages(lp.total_pages || 0);
+      if (lp.page && lp.page !== page) setPoolPage(lp.page);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "加载本地号池失败");
+    }
+  }, []);
 
   useEffect(() => {
-    void refresh();
-    const t = setInterval(() => void refresh(), 3000);
+    void refreshCore();
+    const t = setInterval(() => void refreshCore(), 3000);
     return () => clearInterval(t);
-  }, []);
+  }, [refreshCore]);
+
+  useEffect(() => {
+    void refreshRuns(runsPage);
+  }, [runsPage, refreshRuns]);
+
+  useEffect(() => {
+    void refreshPool(poolPage);
+  }, [poolPage, refreshPool]);
+
+  // light re-poll lists while running so new results appear
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => {
+      void refreshRuns(runsPage);
+      void refreshPool(poolPage);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [running, runsPage, poolPage, refreshRuns, refreshPool]);
 
   async function start() {
     setBusy(true);
@@ -87,7 +202,7 @@ export default function RegisterPage() {
       const n = Math.max(1, Math.min(10000, parseInt(target, 10) || 10));
       await api("/api/start", { method: "POST", body: JSON.stringify({ target: n }) });
       setMsg(`已启动 target=${n}`);
-      await refresh();
+      await refreshCore();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "启动失败");
     } finally {
@@ -100,7 +215,6 @@ export default function RegisterPage() {
     try {
       await api("/api/stop", { method: "POST", body: "{}" });
       setMsg("已停止");
-      // after stop, pull latest results into local pool if enabled
       try {
         await api("/api/local-pool/import", {
           method: "POST",
@@ -109,7 +223,10 @@ export default function RegisterPage() {
       } catch {
         /* optional */
       }
-      await refresh();
+      await refreshCore();
+      setPoolPage(1);
+      await refreshRuns(runsPage);
+      await refreshPool(1);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "停止失败");
     } finally {
@@ -144,7 +261,9 @@ export default function RegisterPage() {
         },
       );
       setMsg(`已入库 ${d.added ?? 0} 个（run ${d.run_id || "latest"}）`);
-      await refresh();
+      setPoolPage(1);
+      await refreshPool(1);
+      await refreshRuns(runsPage);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "入库失败");
     } finally {
@@ -159,8 +278,10 @@ export default function RegisterPage() {
         "/api/local-pool/sync",
         { method: "POST", body: JSON.stringify({ all: false }) },
       );
-      setMsg(`同步完成：成功 ${d.synced ?? 0} / 失败 ${d.failed ?? 0}（共 ${d.total ?? 0}）`);
-      await refresh();
+      setMsg(
+        `同步完成：成功 ${d.synced ?? 0} / 失败 ${d.failed ?? 0}（共 ${d.total ?? 0}）`,
+      );
+      await refreshPool(poolPage);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "同步失败");
     } finally {
@@ -189,7 +310,6 @@ export default function RegisterPage() {
           }
         />
 
-        {/* Big controls */}
         <LayerCard className="mb-4">
           <LayerCard.Secondary>控制台</LayerCard.Secondary>
           <LayerCard.Primary>
@@ -279,7 +399,6 @@ export default function RegisterPage() {
           </div>
         ) : null}
 
-        {/* Prominent logs */}
         <LayerCard className="mb-4">
           <LayerCard.Secondary>
             <span className="text-base font-semibold">实时日志</span>{" "}
@@ -305,7 +424,6 @@ export default function RegisterPage() {
           </LayerCard.Primary>
         </LayerCard>
 
-        {/* Results */}
         <LayerCard className="mb-4">
           <LayerCard.Secondary>
             注册结果{" "}
@@ -341,9 +459,6 @@ export default function RegisterPage() {
                         variant="secondary"
                         onClick={() => {
                           const q = tokenQuery();
-                          const sep = q ? "&" : "?";
-                          const url = `/api/runs/${r.id}/download?kind=cpa${q ? q.replace("?", sep) : ""}`;
-                          // tokenQuery returns ?token=... so build carefully
                           const t = q.startsWith("?") ? q.slice(1) : q;
                           window.open(
                             t
@@ -368,10 +483,16 @@ export default function RegisterPage() {
                 ))}
               </div>
             )}
+            <Pager
+              page={runsPage}
+              totalPages={runsTotalPages}
+              total={runsTotal}
+              label="注册结果"
+              onChange={setRunsPage}
+            />
           </LayerCard.Primary>
         </LayerCard>
 
-        {/* Local pool */}
         <LayerCard>
           <LayerCard.Secondary>
             本地号池{" "}
@@ -386,7 +507,7 @@ export default function RegisterPage() {
               </Text>
             ) : (
               <div className="flex flex-col gap-3">
-                {pool.slice(0, 30).map((p) => (
+                {pool.map((p) => (
                   <div
                     key={p.name}
                     className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2 last:border-0"
@@ -408,13 +529,15 @@ export default function RegisterPage() {
                     </div>
                   </div>
                 ))}
-                {pool.length > 30 ? (
-                  <Text size="xs" variant="secondary">
-                    仅显示最近 30 条，共 {poolTotal}
-                  </Text>
-                ) : null}
               </div>
             )}
+            <Pager
+              page={poolPage}
+              totalPages={poolTotalPages}
+              total={poolTotal}
+              label="本地号池"
+              onChange={setPoolPage}
+            />
           </LayerCard.Primary>
         </LayerCard>
       </div>

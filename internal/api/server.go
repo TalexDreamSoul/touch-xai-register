@@ -619,17 +619,24 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	limit := 20
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	dirs, err := cpa.ListRunDirs(s.opt.Paths.Outputs, limit)
+	page, pageSize := parsePage(r, 1, 10, 100)
+	// Fetch all run dirs then page — outputs volume is small enough for panel use.
+	dirs, err := cpa.ListRunDirs(s.opt.Paths.Outputs, 0)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
+	total := len(dirs)
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	pageDirs := dirs[start:end]
+
 	type runInfo struct {
 		ID       string `json:"id"`
 		Path     string `json:"path"`
@@ -637,8 +644,8 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		SSOFiles int    `json:"sso_files"`
 		ModTime  string `json:"mod_time"`
 	}
-	var out []runInfo
-	for _, dir := range dirs {
+	out := make([]runInfo, 0, len(pageDirs))
+	for _, dir := range pageDirs {
 		files, _ := cpa.CollectCPAJSON(dir)
 		ssoN := 0
 		if entries, err := os.ReadDir(filepath.Join(dir, "SSO")); err == nil {
@@ -656,10 +663,14 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			ModTime:  mt,
 		})
 	}
-	if out == nil {
-		out = []runInfo{}
-	}
-	writeJSON(w, 200, map[string]any{"ok": true, "runs": out})
+	writeJSON(w, 200, map[string]any{
+		"ok":         true,
+		"runs":       out,
+		"total":      total,
+		"page":       page,
+		"page_size":  pageSize,
+		"total_pages": pageCount(total, pageSize),
+	})
 }
 
 func (s *Server) handleRunFiles(w http.ResponseWriter, r *http.Request) {
@@ -1169,4 +1180,35 @@ func contentTypeFor(path string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+func parsePage(r *http.Request, defPage, defSize, maxSize int) (page, pageSize int) {
+	page, pageSize = defPage, defSize
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pageSize = n
+		}
+	}
+	if pageSize > maxSize {
+		pageSize = maxSize
+	}
+	if pageSize < 1 {
+		pageSize = defSize
+	}
+	return page, pageSize
+}
+
+func pageCount(total, pageSize int) int {
+	if pageSize <= 0 {
+		return 0
+	}
+	if total <= 0 {
+		return 0
+	}
+	return (total + pageSize - 1) / pageSize
 }

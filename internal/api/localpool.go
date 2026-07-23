@@ -8,17 +8,36 @@ import (
 
 	"github.com/grok-free-register/grok-reg/internal/config"
 	"github.com/grok-free-register/grok-reg/internal/cpa"
+	"github.com/grok-free-register/grok-reg/internal/localpool"
 )
 
 func (s *Server) handleLocalPoolList(w http.ResponseWriter, r *http.Request) {
-	items := s.localPool.List()
-	total, unsynced := s.localPool.Stats()
+	page, pageSize := parsePage(r, 1, 10, 100)
+	all := s.localPool.List()
+	totalAll, unsynced := s.localPool.Stats()
+	total := len(all)
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	items := all[start:end]
+	if items == nil {
+		items = []localpool.Entry{}
+	}
+	_ = totalAll
 	writeJSON(w, 200, map[string]any{
-		"ok":       true,
-		"total":    total,
-		"unsynced": unsynced,
-		"items":    items,
-		"dir":      s.localPool.Dir(),
+		"ok":          true,
+		"total":       total,
+		"unsynced":    unsynced,
+		"items":       items,
+		"dir":         s.localPool.Dir(),
+		"page":        page,
+		"page_size":   pageSize,
+		"total_pages": pageCount(total, pageSize),
 	})
 }
 
