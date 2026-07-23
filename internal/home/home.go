@@ -25,6 +25,7 @@ type Paths struct {
 	UploadCache  string // upload dedup cache json
 	PatrolState  string // pool patrol snapshot json
 	ClusterState string // federation node registry / meta
+	StatusLayout string // public status page layout json
 	TmpDir       string // multipart upload temp files
 	Clearance    string // optional: bundled compose path override
 }
@@ -54,6 +55,7 @@ func Resolve() (Paths, error) {
 		UploadCache:  filepath.Join(root, "upload-cache.json"),
 		PatrolState:  filepath.Join(root, "patrol-state.json"),
 		ClusterState: filepath.Join(root, "cluster-state.json"),
+		StatusLayout: filepath.Join(root, "status-layout.json"),
 		TmpDir:       filepath.Join(root, "tmp"),
 	}
 	return p, nil

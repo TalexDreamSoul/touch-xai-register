@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import {
+  BroadcastIcon,
   CloudArrowUpIcon,
   DownloadSimpleIcon,
   GearIcon,
@@ -12,7 +13,6 @@ import {
   SignOutIcon,
   StackIcon,
   SunIcon,
-  BroadcastIcon,
 } from "@phosphor-icons/react";
 import {
   Badge,
@@ -56,9 +56,13 @@ const navGroups: NavGroup[] = [
   },
   {
     label: "联邦",
+    items: [{ href: "/cluster", label: "主从", icon: NetworkIcon }],
+  },
+  {
+    label: "状态页",
     items: [
-      { href: "/cluster", label: "主从", icon: NetworkIcon },
-      { href: "/status", label: "状态页", icon: BroadcastIcon },
+      { href: "/status", label: "公开看板", icon: BroadcastIcon },
+      { href: "/status-admin", label: "看板配置", icon: GearIcon },
     ],
   },
   {
@@ -108,7 +112,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
               Grok Panel
             </Text>
             <Text variant="secondary" size="xs">
-              注册 · CPA · 主从
+              注册 · CPA · 状态
             </Text>
           </div>
           <Sidebar.Trigger className="shrink-0" />

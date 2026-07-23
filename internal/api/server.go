@@ -23,6 +23,7 @@ import (
 	"github.com/grok-free-register/grok-reg/internal/home"
 	"github.com/grok-free-register/grok-reg/internal/patrol"
 	"github.com/grok-free-register/grok-reg/internal/state"
+	"github.com/grok-free-register/grok-reg/internal/statuspage"
 	"github.com/grok-free-register/grok-reg/internal/transfer"
 )
 
@@ -40,6 +41,7 @@ type Server struct {
 	transfer *transfer.Service
 	patrol   *patrol.Service
 	cluster  *cluster.Service
+	status   *statuspage.Service
 }
 
 func New(opt Options) *Server {
@@ -94,6 +96,29 @@ func New(opt Options) *Server {
 		// report zeros here — full batch upload is via grok upload / transfer.
 		return 0, 0, nil
 	})
+	s.status = statuspage.New(opt.Paths.StatusLayout, func() config.Config {
+		cfg, _ := config.Load(opt.Paths.Config)
+		return cfg
+	}, opt.Paths.Outputs)
+	s.status.SetPoolLister(func() ([]cpa.AuthMeta, error) {
+		cfg, _ := config.Load(opt.Paths.Config)
+		return cpa.NewClient(cfg.CPAManagementBase, cfg.CPAManagementKey, max(cfg.CPAUploadTimeoutSec, 30)).List()
+	})
+	s.status.SetPatrolSnap(func() (healthy, rateLimited, dead, disabled, total int) {
+		o := s.patrol.Overview()
+		return o.Healthy, o.RateLimited, o.Dead, o.Disabled, o.Total
+	})
+	s.status.SetClusterSnap(func() map[string]any {
+		st := s.cluster.Status()
+		return map[string]any{
+			"role": st.Role,
+			"need": st.Need,
+			"pool_target": st.PoolTarget,
+			"slaves_online": len(filterOnline(st.Nodes)),
+			"slaves_total": len(st.Nodes),
+			"nodes": st.Nodes,
+		}
+	})
 	s.routes()
 	return s
 }
@@ -139,6 +164,7 @@ func (s *Server) ListenAndServe() error {
 	s.transfer.ExportJobs.StartPruner(bgCtx, 15*time.Minute)
 	s.patrol.Start(bgCtx)
 	s.cluster.Start(bgCtx)
+	s.status.Start(bgCtx)
 
 	// Graceful shutdown: cancel running jobs, flush the upload cache.
 	sigCh := make(chan os.Signal, 1)
@@ -211,6 +237,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/federation/report", s.handleFederationReport)
 	s.mux.HandleFunc("GET /api/public/status", s.handlePublicStatus)
 	s.mux.HandleFunc("POST /api/public/status", s.handlePublicStatus)
+	s.mux.HandleFunc("GET /api/public/status.json", s.handlePublicStatusJSON)
+	s.mux.HandleFunc("GET /api/status/layout", s.handleStatusLayoutGet)
+	s.mux.HandleFunc("PUT /api/status/layout", s.handleStatusLayoutPut)
+	s.mux.HandleFunc("POST /api/status/probe-now", s.handleStatusProbeNow)
 	// Admin (panel token)
 	s.mux.HandleFunc("GET /api/cluster/status", s.handleClusterStatus)
 	s.mux.HandleFunc("POST /api/cluster/kick", s.handleClusterKick)
@@ -265,7 +295,7 @@ func (s *Server) routes() {
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Panel-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Panel-Token, X-Status-Password, X-Cluster-Token")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -282,6 +312,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		if r.URL.Path == "/api/health" ||
 			strings.HasPrefix(r.URL.Path, "/api/federation/") ||
 			r.URL.Path == "/api/public/status" ||
+			r.URL.Path == "/api/public/status.json" ||
 			!strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return

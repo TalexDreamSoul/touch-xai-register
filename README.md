@@ -40,8 +40,10 @@ make docker-rebuild
 1. **主节点**：侧栏「联邦 → 主从」→ 角色 `master`，设定号池维持数量、单次分配 1–10、可选**联邦密钥**。  
    机器可读：`GET /api/federation/info`（`X-Cluster-Token`，与状态页密码独立）。
 2. **从节点**：角色 `slave`，可填**多个主 URL**（换行/逗号）+ 同一联邦密钥 → 对每个主心跳，取最大 `assign` 自动注册。
-3. **公网状态页**（给人看）：`/status/` · `GET /api/public/status`  
-   密码字段 `CLUSTER_STATUS_PASSWORD`（`X-Status-Password`），**与联邦密钥完全独立**；空=公开。
+3. **公网状态页**（独立导航「状态页」）：`/status/` · JSON `GET /api/public/status.json`  
+   - 展示号池（正式/候选）、缺口、模型可用性、联邦摘要（均可后台开关）  
+   - 密码 `CLUSTER_STATUS_PASSWORD`（`X-Status-Password`），**与联邦密钥独立**；空=公开  
+   - 后台约 30s 随机抽模型探活（`max_tokens=20`，随机 prompt），配置在 `/status-admin/`
 4. 主节点可看从列表并踢出节点。
 
 ```bash

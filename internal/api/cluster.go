@@ -79,22 +79,6 @@ func (s *Server) handleFederationReport(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, res)
 }
 
-// handlePublicStatus is the human status board (password independent of federation token).
-func (s *Server) handlePublicStatus(w http.ResponseWriter, r *http.Request) {
-	pw := statusPassword(r)
-	info, code, msg := s.cluster.StatusPage(pw)
-	if code != 0 {
-		writeJSON(w, code, map[string]any{
-			"ok":            false,
-			"error":         msg,
-			"auth_required": true,
-			"service":       "grok-panel-status",
-		})
-		return
-	}
-	writeJSON(w, 200, info)
-}
-
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 	st := s.cluster.Status()
 	writeJSON(w, 200, map[string]any{"ok": true, "cluster": st})
