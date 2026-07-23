@@ -26,6 +26,7 @@ type Paths struct {
 	PatrolState  string // pool patrol snapshot json
 	ClusterState string // federation node registry / meta
 	StatusLayout string // public status page layout json
+	LocalPool    string // local credential pool dir
 	TmpDir       string // multipart upload temp files
 	Clearance    string // optional: bundled compose path override
 }
@@ -56,6 +57,7 @@ func Resolve() (Paths, error) {
 		PatrolState:  filepath.Join(root, "patrol-state.json"),
 		ClusterState: filepath.Join(root, "cluster-state.json"),
 		StatusLayout: filepath.Join(root, "status-layout.json"),
+		LocalPool:    filepath.Join(root, "local-pool"),
 		TmpDir:       filepath.Join(root, "tmp"),
 	}
 	return p, nil

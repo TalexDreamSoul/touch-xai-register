@@ -98,6 +98,10 @@ type Config struct {
 	ClusterAutoUpload   bool   // slave upload CPA after batch
 	// Public status page (human-facing), independent from ClusterPublicToken
 	ClusterStatusPassword string // empty = open; set to require password on /status
+
+	// Local pool (register results)
+	LocalPoolAutoImport bool // after register, copy CPA json into GROK_HOME/local-pool
+	LocalPoolAutoSync   bool // upload local-pool to CPA management (master formal pool)
 }
 
 func Defaults() Config {
@@ -155,6 +159,8 @@ func Defaults() Config {
 		ClusterAssignMax:      10,
 		ClusterAutoRegister:   true,
 		ClusterAutoUpload:     true,
+		LocalPoolAutoImport:   true,
+		LocalPoolAutoSync:     false,
 	}
 }
 
@@ -235,6 +241,8 @@ func Save(path string, cfg Config) error {
 	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MAX=%d\n", cfg.ClusterAssignMax))
 	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_REGISTER=%s\n", bool01(cfg.ClusterAutoRegister)))
 	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_UPLOAD=%s\n", bool01(cfg.ClusterAutoUpload)))
+	b.WriteString(fmt.Sprintf("LOCAL_POOL_AUTO_IMPORT=%s\n", bool01(cfg.LocalPoolAutoImport)))
+	b.WriteString(fmt.Sprintf("LOCAL_POOL_AUTO_SYNC=%s\n", bool01(cfg.LocalPoolAutoSync)))
 	// CLUSTER_STATUS_PASSWORD via appendEnvKey when set from panel
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
@@ -513,6 +521,12 @@ func applyMap(cfg *Config, env map[string]string) {
 	}
 	if v, ok := env["CLUSTER_AUTO_UPLOAD"]; ok {
 		cfg.ClusterAutoUpload = truthy(v)
+	}
+	if v, ok := env["LOCAL_POOL_AUTO_IMPORT"]; ok {
+		cfg.LocalPoolAutoImport = truthy(v)
+	}
+	if v, ok := env["LOCAL_POOL_AUTO_SYNC"]; ok {
+		cfg.LocalPoolAutoSync = truthy(v)
 	}
 }
 

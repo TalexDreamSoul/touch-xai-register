@@ -21,6 +21,7 @@ import (
 	"github.com/grok-free-register/grok-reg/internal/cpa"
 	"github.com/grok-free-register/grok-reg/internal/daemon"
 	"github.com/grok-free-register/grok-reg/internal/home"
+	"github.com/grok-free-register/grok-reg/internal/localpool"
 	"github.com/grok-free-register/grok-reg/internal/patrol"
 	"github.com/grok-free-register/grok-reg/internal/state"
 	"github.com/grok-free-register/grok-reg/internal/statuspage"
@@ -42,6 +43,7 @@ type Server struct {
 	patrol   *patrol.Service
 	cluster  *cluster.Service
 	status   *statuspage.Service
+	localPool *localpool.Service
 }
 
 func New(opt Options) *Server {
@@ -119,6 +121,7 @@ func New(opt Options) *Server {
 			"nodes": st.Nodes,
 		}
 	})
+	s.localPool = localpool.New(opt.Paths.LocalPool)
 	s.routes()
 	return s
 }
@@ -244,6 +247,11 @@ func (s *Server) routes() {
 	// Admin (panel token)
 	s.mux.HandleFunc("GET /api/cluster/status", s.handleClusterStatus)
 	s.mux.HandleFunc("POST /api/cluster/kick", s.handleClusterKick)
+
+	// local credential pool (register results)
+	s.mux.HandleFunc("GET /api/local-pool", s.handleLocalPoolList)
+	s.mux.HandleFunc("POST /api/local-pool/import", s.handleLocalPoolImport)
+	s.mux.HandleFunc("POST /api/local-pool/sync", s.handleLocalPoolSync)
 
 	if s.opt.WebFS != nil {
 		// Next export lives under out/ inside embed.FS
@@ -512,6 +520,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		snap.PhaseDetail = "已手动停止"
 		snap.PID = 0
 	})
+	go s.autoImportLatestRun("")
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -817,6 +826,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"cluster_assign_max":           cfg.ClusterAssignMax,
 		"cluster_auto_register":        cfg.ClusterAutoRegister,
 		"cluster_auto_upload":          cfg.ClusterAutoUpload,
+		"local_pool_auto_import":       cfg.LocalPoolAutoImport,
+		"local_pool_auto_sync":         cfg.LocalPoolAutoSync,
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "config": view})
 }
@@ -873,6 +884,9 @@ type configUpdate struct {
 	ClusterAssignMax      *int    `json:"cluster_assign_max"`
 	ClusterAutoRegister   *bool   `json:"cluster_auto_register"`
 	ClusterAutoUpload     *bool   `json:"cluster_auto_upload"`
+
+	LocalPoolAutoImport *bool `json:"local_pool_auto_import"`
+	LocalPoolAutoSync   *bool `json:"local_pool_auto_sync"`
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -1036,6 +1050,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.ClusterStatusPassword != nil {
 		cfg.ClusterStatusPassword = *u.ClusterStatusPassword
+	}
+	if u.LocalPoolAutoImport != nil {
+		cfg.LocalPoolAutoImport = *u.LocalPoolAutoImport
+	}
+	if u.LocalPoolAutoSync != nil {
+		cfg.LocalPoolAutoSync = *u.LocalPoolAutoSync
 	}
 	if err := config.Save(s.opt.Paths.Config, cfg); err != nil {
 		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
