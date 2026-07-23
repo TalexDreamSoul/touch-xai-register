@@ -35,6 +35,20 @@ make docker-rebuild
 
 面板 UI 为 **Next.js + Cloudflare Kumo**（无自写 CSS），`make build` 会先 `panel-ui` 再嵌入 Go 二进制。
 
+### Toolkit（SMTP + Cloudflare Mail 网关）
+
+可选叠加 [opctoai-toolkit](https://github.com/lhq1363511234/opctoai-toolkit) 的邮件控制台与统一入口，**不替换**本仓库 Go 注册机：
+
+```bash
+cp config/smtp/.env.example config/smtp/.env   # 填 FREEMAIL_ / SMTP_
+make toolkit-up
+# http://127.0.0.1:8080/panel/   注册面板
+# http://127.0.0.1:8080/smtp/    邮件控制台
+```
+
+邮箱可走 `EMAIL_MODE=freemail`（直连 Worker）或 `EMAIL_MODE=custom` + `EMAIL_API=http://mail-bridge:18431`。  
+完整说明：[docs/TOOLKIT.md](docs/TOOLKIT.md) · 第三方声明：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+
 ### 主从调度（联邦）
 
 1. **主节点**：侧栏「联邦 → 主从」→ 角色 `master`，设定号池维持数量、单次分配 1–10、可选**联邦密钥**。  
