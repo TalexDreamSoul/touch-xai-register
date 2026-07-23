@@ -1,7 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Button, Input, LayerCard, Switch, Text } from "@cloudflare/kumo";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Badge,
+  Button,
+  Input,
+  LayerCard,
+  Switch,
+  Tabs,
+  Text,
+} from "@cloudflare/kumo";
 import { AdminShell } from "@/components/admin-shell";
 import { PageHeader } from "@/components/page-header";
 import { api } from "@/lib/api";
@@ -35,6 +43,8 @@ type Layout = {
   probe_max_tokens: number;
   api_base: string;
 };
+
+type TabKey = "copy" | "blocks" | "groups" | "probe";
 
 const defaultDrafts: GroupDraft[] = [
   { id: "grok", name: "Grok", modelsText: "grok-4.5\ngrok-4\ngrok-3" },
@@ -78,13 +88,68 @@ function parseModels(text: string): string[] {
     .filter(Boolean);
 }
 
+function snapshotOf(layout: Layout, drafts: GroupDraft[], pw: string): string {
+  return JSON.stringify({
+    layout: {
+      ...layout,
+      model_groups: drafts.map((d, i) => ({
+        id: d.id,
+        name: d.name,
+        models: parseModels(d.modelsText),
+      })),
+      models: drafts.flatMap((d) => parseModels(d.modelsText)),
+    },
+    pw,
+  });
+}
+
+function CardSaveBar({
+  dirty,
+  busy,
+  onSave,
+  label = "保存此区块",
+}: {
+  dirty: boolean;
+  busy: boolean;
+  onSave: () => void;
+  label?: string;
+}) {
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-kumo-hairline pt-3">
+      <div>
+        {dirty ? (
+          <Badge variant="primary">有未保存更改</Badge>
+        ) : (
+          <Badge variant="secondary">已与服务器一致</Badge>
+        )}
+      </div>
+      <Button
+        size="lg"
+        loading={busy}
+        disabled={!dirty && !busy}
+        onClick={onSave}
+        className="!h-11 !min-w-[140px] !px-6 !text-base !font-semibold"
+      >
+        {label}
+      </Button>
+    </div>
+  );
+}
+
 export default function StatusAdminPage() {
+  const [tab, setTab] = useState<TabKey>("copy");
   const [layout, setLayout] = useState<Layout>(empty);
   const [drafts, setDrafts] = useState<GroupDraft[]>(defaultDrafts);
   const [statusPassword, setStatusPassword] = useState("");
+  const [savedSnap, setSavedSnap] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [pwSet, setPwSet] = useState(false);
+
+  const dirty = useMemo(() => {
+    if (!savedSnap) return false;
+    return snapshotOf(layout, drafts, statusPassword) !== savedSnap;
+  }, [layout, drafts, statusPassword, savedSnap]);
 
   async function load() {
     const [l, cfg] = await Promise.all([
@@ -111,7 +176,9 @@ export default function StatusAdminPage() {
     next.model_groups = groups;
     setLayout(next);
     setDrafts(nextDrafts);
+    setStatusPassword("");
     setPwSet(!!cfg.config.cluster_status_password_set);
+    setSavedSnap(snapshotOf(next, nextDrafts, ""));
   }
 
   useEffect(() => {
@@ -150,7 +217,7 @@ export default function StatusAdminPage() {
         });
         setStatusPassword("");
       }
-      setMsg("已保存看板配置（含模型组别）");
+      setMsg("已保存看板配置");
       await load();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "保存失败");
@@ -196,33 +263,72 @@ export default function StatusAdminPage() {
     setDrafts((prev) => prev.filter((_, idx) => idx !== i));
   }
 
+  const tabItems = useMemo(
+    () => [
+      { value: "copy", label: dirty ? "文案 ·" : "文案" },
+      { value: "blocks", label: "展示区块" },
+      { value: "groups", label: `模型组别 (${drafts.length})` },
+      { value: "probe", label: "探活" },
+    ],
+    [drafts.length, dirty],
+  );
+
   return (
     <AdminShell>
       <PageHeader
         title="状态页配置"
-        description="主节点看板 · 模型组别（Grok / GPT…）· 探活"
+        description="Tabs 分区 · 主节点模型组别 · 大按钮保存"
         actions={
           <>
-            <Button size="sm" variant="secondary" loading={busy} onClick={() => void probeNow()}>
+            {dirty ? <Badge variant="primary">未保存</Badge> : null}
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={busy}
+              onClick={() => void probeNow()}
+            >
               立即探活
             </Button>
-            <Button size="sm" loading={busy} onClick={() => void save()}>
-              保存
+            <Button
+              size="lg"
+              loading={busy}
+              onClick={() => void save()}
+              className="!h-11 !min-w-[128px] !px-5 !text-base !font-semibold"
+            >
+              {dirty ? "保存更改" : "已保存"}
             </Button>
           </>
         }
       />
+
+      {dirty ? (
+        <div className="mb-3 rounded-md border border-amber-400/50 bg-amber-500/10 px-3 py-2">
+          <Text size="sm">有未保存的更改 — 切换标签不会自动保存，请点「保存更改」</Text>
+        </div>
+      ) : null}
       {msg ? (
-        <div className="mb-3">
+        <div className="mb-3 rounded-md bg-kumo-contrast/5 px-3 py-2">
           <Text>{msg}</Text>
         </div>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="mb-4">
+        <Tabs
+          variant="segmented"
+          tabs={tabItems}
+          value={tab}
+          onValueChange={(v) => {
+            if (!v) return;
+            setTab(v as TabKey);
+          }}
+        />
+      </div>
+
+      {tab === "copy" ? (
         <LayerCard>
-          <LayerCard.Secondary>文案</LayerCard.Secondary>
+          <LayerCard.Secondary>文案 / 访问</LayerCard.Secondary>
           <LayerCard.Primary>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 sm:max-w-xl">
               <Input
                 label="标题"
                 value={layout.title}
@@ -250,13 +356,16 @@ export default function StatusAdminPage() {
                 <code>/api/public/status.json</code>
               </Text>
             </div>
+            <CardSaveBar dirty={dirty} busy={busy} onSave={() => void save()} />
           </LayerCard.Primary>
         </LayerCard>
+      ) : null}
 
+      {tab === "blocks" ? (
         <LayerCard>
           <LayerCard.Secondary>展示区块</LayerCard.Secondary>
           <LayerCard.Primary>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 sm:max-w-md">
               <Switch
                 label="号池（正式池 / 候选池）"
                 checked={layout.show_pool}
@@ -288,10 +397,13 @@ export default function StatusAdminPage() {
                 onCheckedChange={(v) => setFlag("show_json_link", !!v)}
               />
             </div>
+            <CardSaveBar dirty={dirty} busy={busy} onSave={() => void save()} />
           </LayerCard.Primary>
         </LayerCard>
+      ) : null}
 
-        <LayerCard className="lg:col-span-2">
+      {tab === "groups" ? (
+        <LayerCard>
           <LayerCard.Secondary>
             模型组别{" "}
             <Button size="sm" variant="secondary" onClick={addGroup}>
@@ -301,7 +413,7 @@ export default function StatusAdminPage() {
           <LayerCard.Primary>
             <div className="flex flex-col gap-4">
               <Text size="xs" variant="secondary">
-                主节点可配置多个系列（如 Grok、GPT）。公开看板按组别分区展示；探活对所有组别模型合并随机探测。
+                如 Grok / GPT 系列；公开看板按组别分区。空组别可预留。
               </Text>
               {drafts.length === 0 ? (
                 <Text variant="secondary">暂无组别，点「添加组别」</Text>
@@ -350,13 +462,16 @@ export default function StatusAdminPage() {
                 ))
               )}
             </div>
+            <CardSaveBar dirty={dirty} busy={busy} onSave={() => void save()} />
           </LayerCard.Primary>
         </LayerCard>
+      ) : null}
 
+      {tab === "probe" ? (
         <LayerCard>
           <LayerCard.Secondary>探活参数</LayerCard.Secondary>
           <LayerCard.Primary>
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-3 sm:max-w-xl">
               <Switch
                 label="启用后台探活"
                 checked={layout.probe_enabled}
@@ -382,27 +497,14 @@ export default function StatusAdminPage() {
                 onChange={(e) => setFlag("api_base", e.target.value)}
                 placeholder="http://127.0.0.1:8317/v1"
               />
-            </div>
-          </LayerCard.Primary>
-        </LayerCard>
-
-        <LayerCard>
-          <LayerCard.Secondary>说明</LayerCard.Secondary>
-          <LayerCard.Primary>
-            <div className="flex flex-col gap-2">
-              <Text size="sm" variant="secondary">
-                · 组别只影响看板分区；探活仍对全部模型随机轮询。
-              </Text>
-              <Text size="sm" variant="secondary">
-                · 空组别（如预留 GPT）可保留名称，等有模型再填。
-              </Text>
-              <Text size="sm" variant="secondary">
-                · JSON 同时返回 models[] 与 model_groups[]，便于外部监控。
+              <Text size="xs" variant="secondary">
+                探活对所有组别模型合并后随机轮询。
               </Text>
             </div>
+            <CardSaveBar dirty={dirty} busy={busy} onSave={() => void save()} />
           </LayerCard.Primary>
         </LayerCard>
-      </div>
+      ) : null}
     </AdminShell>
   );
 }
