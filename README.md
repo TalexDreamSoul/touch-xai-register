@@ -37,11 +37,12 @@ make docker-rebuild
 
 ### 主从调度（联邦）
 
-1. **主节点**：设置页 / 主从页 → 角色 `master`，设定 `号池维持数量`、单次分配 1–10、可选联邦密钥。  
-   公网可读：`GET /api/federation/info`（可选 `X-Cluster-Token`）。
-2. **从节点**：角色 `slave`，填主节点 URL + 同一密钥 → 自动心跳。  
-   主节点按缺口分配 1–10；从节点自动 `start`，跑完后可自动上传。
-3. 主节点「主从」页可看在线从节点列表、踢出节点。
+1. **主节点**：侧栏「联邦 → 主从」→ 角色 `master`，设定号池维持数量、单次分配 1–10、可选**联邦密钥**。  
+   机器可读：`GET /api/federation/info`（`X-Cluster-Token`，与状态页密码独立）。
+2. **从节点**：角色 `slave`，可填**多个主 URL**（换行/逗号）+ 同一联邦密钥 → 对每个主心跳，取最大 `assign` 自动注册。
+3. **公网状态页**（给人看）：`/status/` · `GET /api/public/status`  
+   密码字段 `CLUSTER_STATUS_PASSWORD`（`X-Status-Password`），**与联邦密钥完全独立**；空=公开。
+4. 主节点可看从列表并踢出节点。
 
 ```bash
 # CLI 速查

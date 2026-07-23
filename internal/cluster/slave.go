@@ -13,13 +13,26 @@ import (
 	"github.com/grok-free-register/grok-reg/internal/config"
 )
 
+// MasterLink is the live view of one configured master from a slave.
+type MasterLink struct {
+	URL        string     `json:"url"`
+	OK         bool       `json:"ok"`
+	LastError  string     `json:"last_error,omitempty"`
+	LastOK     *time.Time `json:"last_ok,omitempty"`
+	LastAssign int        `json:"last_assign"`
+	Need       int        `json:"need"`
+	MasterName string     `json:"master_name,omitempty"`
+}
+
 func (s *Service) slaveLoop(ctx context.Context) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	for {
 		cfg := s.cfgFn()
 		sec := clamp(cfg.ClusterHeartbeatSec, 5, 300)
-		if normalizeRole(cfg.ClusterRole) != RoleSlave || strings.TrimSpace(cfg.ClusterMasterURL) == "" {
+		masters := cfg.ClusterMasters()
+		if normalizeRole(cfg.ClusterRole) != RoleSlave || len(masters) == 0 {
 			s.setSlaveMeta(false, "未启用从节点或未配置主地址", nil)
+			s.setMasterLinks(nil)
 			select {
 			case <-ctx.Done():
 				return
@@ -28,7 +41,7 @@ func (s *Service) slaveLoop(ctx context.Context) {
 			}
 		}
 
-		if err := s.slaveTick(client, cfg); err != nil {
+		if err := s.slaveTickMulti(client, cfg, masters); err != nil {
 			s.setSlaveMeta(false, err.Error(), nil)
 		}
 
@@ -50,54 +63,101 @@ func (s *Service) setSlaveMeta(ok bool, errMsg string, t *time.Time) {
 	}
 }
 
-func (s *Service) slaveTick(client *http.Client, cfg config.Config) error {
-	busy := false
-	runningTarget := 0
-	if s.runningFn != nil && s.runningFn() {
-		busy = true
-	}
+func (s *Service) setMasterLinks(links []MasterLink) {
+	s.slaveMu.Lock()
+	defer s.slaveMu.Unlock()
+	s.masterLinks = links
+}
 
+func (s *Service) slaveTickMulti(client *http.Client, cfg config.Config, masters []string) error {
+	busy := s.runningFn != nil && s.runningFn()
 	reqBody := HeartbeatRequest{
-		NodeID:        s.nodeID,
-		Name:          firstNonEmpty(cfg.ClusterNodeName, s.nodeID[:min(8, len(s.nodeID))]),
-		Capacity:      clamp(cfg.ClusterAssignMax, 1, 10),
-		Busy:          busy,
-		RunningTarget: runningTarget,
-		Token:         cfg.ClusterPublicToken,
-		Version:       "0.2.0-panel",
+		NodeID:   s.nodeID,
+		Name:     firstNonEmpty(cfg.ClusterNodeName, s.nodeID[:min(8, len(s.nodeID))]),
+		Capacity: clamp(cfg.ClusterAssignMax, 1, 10),
+		Busy:     busy,
+		Token:    cfg.ClusterPublicToken,
+		Version:  "0.2.0-panel",
 	}
 	raw, _ := json.Marshal(reqBody)
-	url := strings.TrimRight(cfg.ClusterMasterURL, "/") + "/api/federation/heartbeat"
-	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if tok := strings.TrimSpace(cfg.ClusterPublicToken); tok != "" {
-		httpReq.Header.Set("X-Cluster-Token", tok)
-	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("heartbeat: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("heartbeat status=%d body=%s", resp.StatusCode, truncate(string(body), 200))
-	}
-	var hb HeartbeatResponse
-	if err := json.Unmarshal(body, &hb); err != nil {
-		return fmt.Errorf("heartbeat decode: %w", err)
-	}
-	now := time.Now()
-	s.slaveMu.Lock()
-	s.slaveConnected = true
-	s.slaveLastErr = ""
-	s.slaveLastOK = &now
-	s.lastAssign = hb.Assign
-	s.slaveMu.Unlock()
 
-	if hb.Assign <= 0 || !cfg.ClusterAutoRegister {
+	links := make([]MasterLink, 0, len(masters))
+	var (
+		bestAssign int
+		bestURL    string
+		anyOK      bool
+		errs       []string
+	)
+
+	for _, base := range masters {
+		link := MasterLink{URL: base}
+		url := base + "/api/federation/heartbeat"
+		httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+		if err != nil {
+			link.LastError = err.Error()
+			links = append(links, link)
+			errs = append(errs, base+": "+err.Error())
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if tok := strings.TrimSpace(cfg.ClusterPublicToken); tok != "" {
+			httpReq.Header.Set("X-Cluster-Token", tok)
+		}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			link.LastError = err.Error()
+			links = append(links, link)
+			errs = append(errs, base+": "+err.Error())
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			msg := fmt.Sprintf("status=%d body=%s", resp.StatusCode, truncate(string(body), 120))
+			link.LastError = msg
+			links = append(links, link)
+			errs = append(errs, base+": "+msg)
+			continue
+		}
+		var hb HeartbeatResponse
+		if err := json.Unmarshal(body, &hb); err != nil {
+			link.LastError = err.Error()
+			links = append(links, link)
+			errs = append(errs, base+": "+err.Error())
+			continue
+		}
+		now := time.Now()
+		link.OK = true
+		link.LastOK = &now
+		link.LastAssign = hb.Assign
+		link.Need = hb.Need
+		link.MasterName = hb.MasterName
+		links = append(links, link)
+		anyOK = true
+		// Prefer the master with the largest assign (most urgent need).
+		if hb.Assign > bestAssign {
+			bestAssign = hb.Assign
+			bestURL = base
+		}
+	}
+
+	s.setMasterLinks(links)
+	now := time.Now()
+	if anyOK {
+		s.setSlaveMeta(true, "", &now)
+		s.slaveMu.Lock()
+		s.lastAssign = bestAssign
+		s.slaveMu.Unlock()
+	} else {
+		msg := "all masters unreachable"
+		if len(errs) > 0 {
+			msg = strings.Join(errs, " | ")
+		}
+		s.setSlaveMeta(false, msg, nil)
+		return fmt.Errorf("%s", msg)
+	}
+
+	if bestAssign <= 0 || !cfg.ClusterAutoRegister {
 		return nil
 	}
 	if s.runningFn != nil && s.runningFn() {
@@ -106,18 +166,16 @@ func (s *Service) slaveTick(client *http.Client, cfg config.Config) error {
 	if s.startFn == nil {
 		return fmt.Errorf("start fn not wired")
 	}
-	target := clamp(hb.Assign, 1, 10)
+	target := clamp(bestAssign, 1, 10)
 	if err := s.startFn(target); err != nil {
 		return fmt.Errorf("auto start target=%d: %w", target, err)
 	}
-
-	// Wait for pipeline to finish (bounded), then optional upload + report.
-	go s.afterAssign(client, cfg, target)
+	// Report completion back to the master that assigned work (and others best-effort).
+	go s.afterAssignMulti(client, cfg, masters, bestURL, target)
 	return nil
 }
 
-func (s *Service) afterAssign(client *http.Client, cfg config.Config, target int) {
-	// Poll until not running (max ~6h)
+func (s *Service) afterAssignMulti(client *http.Client, cfg config.Config, masters []string, preferred string, target int) {
 	deadline := time.Now().Add(6 * time.Hour)
 	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Second)
@@ -135,7 +193,6 @@ func (s *Service) afterAssign(client *http.Client, cfg config.Config, target int
 			s.slaveMu.Unlock()
 		}
 	}
-	// best-effort report
 	rep := ReportRequest{
 		NodeID:    s.nodeID,
 		Name:      firstNonEmpty(cfg.ClusterNodeName, s.nodeID),
@@ -146,20 +203,32 @@ func (s *Service) afterAssign(client *http.Client, cfg config.Config, target int
 		Message:   fmt.Sprintf("batch target=%d uploaded=%d failed=%d", target, uploaded, failed),
 	}
 	raw, _ := json.Marshal(rep)
-	url := strings.TrimRight(cfg.ClusterMasterURL, "/") + "/api/federation/report"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return
+	// preferred first, then the rest
+	order := make([]string, 0, len(masters))
+	if preferred != "" {
+		order = append(order, preferred)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if tok := strings.TrimSpace(cfg.ClusterPublicToken); tok != "" {
-		req.Header.Set("X-Cluster-Token", tok)
+	for _, m := range masters {
+		if m != preferred {
+			order = append(order, m)
+		}
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return
+	for _, base := range order {
+		url := base + "/api/federation/report"
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+		if err != nil {
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if tok := strings.TrimSpace(cfg.ClusterPublicToken); tok != "" {
+			req.Header.Set("X-Cluster-Token", tok)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
 	}
-	_ = resp.Body.Close()
 }
 
 func truncate(s string, n int) string {

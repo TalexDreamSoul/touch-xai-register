@@ -22,6 +22,21 @@ func federationToken(r *http.Request) string {
 	return ""
 }
 
+func statusPassword(r *http.Request) string {
+	if h := strings.TrimSpace(r.Header.Get("X-Status-Password")); h != "" {
+		return h
+	}
+	if q := strings.TrimSpace(r.URL.Query().Get("password")); q != "" {
+		return q
+	}
+	// optional body
+	var body struct {
+		Password string `json:"password"`
+	}
+	_ = decodeJSONBody(r, &body)
+	return strings.TrimSpace(body.Password)
+}
+
 func (s *Server) handleFederationInfo(w http.ResponseWriter, r *http.Request) {
 	tok := federationToken(r)
 	info, code, msg := s.cluster.PublicInfo(tok)
@@ -62,6 +77,22 @@ func (s *Server) handleFederationReport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, 200, res)
+}
+
+// handlePublicStatus is the human status board (password independent of federation token).
+func (s *Server) handlePublicStatus(w http.ResponseWriter, r *http.Request) {
+	pw := statusPassword(r)
+	info, code, msg := s.cluster.StatusPage(pw)
+	if code != 0 {
+		writeJSON(w, code, map[string]any{
+			"ok":            false,
+			"error":         msg,
+			"auth_required": true,
+			"service":       "grok-panel-status",
+		})
+		return
+	}
+	writeJSON(w, 200, info)
 }
 
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {

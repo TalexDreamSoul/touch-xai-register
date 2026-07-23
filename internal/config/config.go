@@ -87,14 +87,17 @@ type Config struct {
 	// Role: standalone | master | slave
 	ClusterRole         string
 	ClusterNodeName     string
-	ClusterPublicToken  string // optional shared secret for federation endpoints
-	ClusterMasterURL    string // slave → master base URL, e.g. https://panel.example.com
+	ClusterPublicToken  string // optional shared secret for federation endpoints (slave↔master)
+	ClusterMasterURL    string // legacy single master URL (still honored)
+	ClusterMasterURLs   string // slave: multi masters, comma/newline separated
 	ClusterHeartbeatSec int    // slave poll interval
 	ClusterPoolTarget   int    // master desired healthy pool size
 	ClusterAssignMin    int    // per-slave assign lower bound (1-10)
 	ClusterAssignMax    int    // per-slave assign upper bound (1-10)
 	ClusterAutoRegister bool   // slave auto start pipeline when assigned
 	ClusterAutoUpload   bool   // slave upload CPA after batch
+	// Public status page (human-facing), independent from ClusterPublicToken
+	ClusterStatusPassword string // empty = open; set to require password on /status
 }
 
 func Defaults() Config {
@@ -225,12 +228,14 @@ func Save(path string, cfg Config) error {
 	b.WriteString(fmt.Sprintf("CLUSTER_NODE_NAME=%s\n", cfg.ClusterNodeName))
 	// CLUSTER_PUBLIC_TOKEN: written via appendEnvKey when set from panel
 	b.WriteString(fmt.Sprintf("CLUSTER_MASTER_URL=%s\n", cfg.ClusterMasterURL))
+	b.WriteString(fmt.Sprintf("CLUSTER_MASTER_URLS=%s\n", strings.Join(cfg.ClusterMasters(), ",")))
 	b.WriteString(fmt.Sprintf("CLUSTER_HEARTBEAT_SEC=%d\n", cfg.ClusterHeartbeatSec))
 	b.WriteString(fmt.Sprintf("CLUSTER_POOL_TARGET=%d\n", cfg.ClusterPoolTarget))
 	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MIN=%d\n", cfg.ClusterAssignMin))
 	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MAX=%d\n", cfg.ClusterAssignMax))
 	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_REGISTER=%s\n", bool01(cfg.ClusterAutoRegister)))
 	b.WriteString(fmt.Sprintf("CLUSTER_AUTO_UPLOAD=%s\n", bool01(cfg.ClusterAutoUpload)))
+	// CLUSTER_STATUS_PASSWORD via appendEnvKey when set from panel
 	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
@@ -477,6 +482,12 @@ func applyMap(cfg *Config, env map[string]string) {
 	if v, ok := env["CLUSTER_MASTER_URL"]; ok {
 		cfg.ClusterMasterURL = strings.TrimRight(strings.TrimSpace(v), "/")
 	}
+	if v, ok := env["CLUSTER_MASTER_URLS"]; ok {
+		cfg.ClusterMasterURLs = v
+	}
+	if v, ok := env["CLUSTER_STATUS_PASSWORD"]; ok {
+		cfg.ClusterStatusPassword = v
+	}
 	if v, ok := env["CLUSTER_HEARTBEAT_SEC"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ClusterHeartbeatSec = n
@@ -532,3 +543,39 @@ func ApplyProxyEnv(cfg Config) {
 		_ = os.Setenv("no_proxy", cfg.NoProxy)
 	}
 }
+
+
+// ClusterMasters returns de-duplicated master base URLs for a slave node.
+// Prefers CLUSTER_MASTER_URLS (comma/newline/space separated); falls back to CLUSTER_MASTER_URL.
+func (cfg Config) ClusterMasters() []string {
+	raw := cfg.ClusterMasterURLs
+	if strings.TrimSpace(raw) == "" {
+		raw = cfg.ClusterMasterURL
+	}
+	// UI may send real newlines or the two-char sequence \n
+	raw = strings.ReplaceAll(raw, "\\n", "\n")
+	raw = strings.ReplaceAll(raw, "\\r", "\r")
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', ';', '\n', '\r', '\t', ' ':
+			return true
+		default:
+			return false
+		}
+	})
+	seen := map[string]struct{}{}
+	var out []string
+	for _, part := range parts {
+		u := strings.TrimRight(strings.TrimSpace(part), "/")
+		if u == "" {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	return out
+}
+

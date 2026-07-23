@@ -12,6 +12,7 @@ import {
   SignOutIcon,
   StackIcon,
   SunIcon,
+  BroadcastIcon,
 } from "@phosphor-icons/react";
 import {
   Badge,
@@ -32,14 +33,38 @@ type NavItem = {
   icon: typeof HouseIcon;
 };
 
-const nav: NavItem[] = [
-  { href: "/", label: "概览", icon: HouseIcon },
-  { href: "/register", label: "注册", icon: PlayCircleIcon },
-  { href: "/upload", label: "上传", icon: CloudArrowUpIcon },
-  { href: "/export", label: "导出", icon: DownloadSimpleIcon },
-  { href: "/pool", label: "号池", icon: StackIcon },
-  { href: "/cluster", label: "主从", icon: NetworkIcon },
-  { href: "/settings", label: "设置", icon: GearIcon },
+type NavGroup = {
+  label: string;
+  items: NavItem[];
+};
+
+const navGroups: NavGroup[] = [
+  {
+    label: "工作台",
+    items: [
+      { href: "/", label: "概览", icon: HouseIcon },
+      { href: "/register", label: "注册", icon: PlayCircleIcon },
+    ],
+  },
+  {
+    label: "凭证",
+    items: [
+      { href: "/upload", label: "上传", icon: CloudArrowUpIcon },
+      { href: "/export", label: "导出", icon: DownloadSimpleIcon },
+      { href: "/pool", label: "号池", icon: StackIcon },
+    ],
+  },
+  {
+    label: "联邦",
+    items: [
+      { href: "/cluster", label: "主从", icon: NetworkIcon },
+      { href: "/status", label: "状态页", icon: BroadcastIcon },
+    ],
+  },
+  {
+    label: "系统",
+    items: [{ href: "/settings", label: "设置", icon: GearIcon }],
+  },
 ];
 
 export function AdminShell({ children }: { children: ReactNode }) {
@@ -90,29 +115,31 @@ export function AdminShell({ children }: { children: ReactNode }) {
         </Sidebar.Header>
 
         <Sidebar.Content className="flex-1 overflow-y-auto">
-          <Sidebar.Group>
-            <Sidebar.GroupLabel>工作台</Sidebar.GroupLabel>
-            <Sidebar.Menu>
-              {nav.map((item) => {
-                const active =
-                  item.href === "/"
-                    ? pathname === "/" || pathname === ""
-                    : pathname === item.href ||
-                      pathname.startsWith(`${item.href}/`);
-                return (
-                  <Sidebar.MenuItem key={item.href}>
-                    <Sidebar.MenuButton
-                      icon={item.icon}
-                      active={active}
-                      onClick={() => router.push(item.href)}
-                    >
-                      {item.label}
-                    </Sidebar.MenuButton>
-                  </Sidebar.MenuItem>
-                );
-              })}
-            </Sidebar.Menu>
-          </Sidebar.Group>
+          {navGroups.map((group) => (
+            <Sidebar.Group key={group.label}>
+              <Sidebar.GroupLabel>{group.label}</Sidebar.GroupLabel>
+              <Sidebar.Menu>
+                {group.items.map((item) => {
+                  const active =
+                    item.href === "/"
+                      ? pathname === "/" || pathname === ""
+                      : pathname === item.href ||
+                        pathname.startsWith(`${item.href}/`);
+                  return (
+                    <Sidebar.MenuItem key={item.href}>
+                      <Sidebar.MenuButton
+                        icon={item.icon}
+                        active={active}
+                        onClick={() => router.push(item.href)}
+                      >
+                        {item.label}
+                      </Sidebar.MenuButton>
+                    </Sidebar.MenuItem>
+                  );
+                })}
+              </Sidebar.Menu>
+            </Sidebar.Group>
+          ))}
         </Sidebar.Content>
 
         <Sidebar.Footer className="!h-auto !min-h-0 !w-full !flex-col !items-stretch !gap-2 !overflow-visible !px-2 !py-2">

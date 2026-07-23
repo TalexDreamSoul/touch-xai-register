@@ -79,7 +79,7 @@ type HeartbeatResponse struct {
 	ServerTime    string       `json:"server_time"`
 }
 
-// PublicInfo is unauthenticated (or token-gated) master advertisement.
+// PublicInfo is federation advertisement (slave↔master), gated by ClusterPublicToken.
 type PublicInfo struct {
 	OK           bool         `json:"ok"`
 	Service      string       `json:"service"`
@@ -97,6 +97,23 @@ type PublicInfo struct {
 	Time         string       `json:"time"`
 }
 
+// StatusPage is the human-facing public status board (gated by ClusterStatusPassword).
+type StatusPage struct {
+	OK              bool         `json:"ok"`
+	Service         string       `json:"service"`
+	Role            string       `json:"role"`
+	Name            string       `json:"name"`
+	AuthRequired    bool         `json:"auth_required"`
+	PoolTarget      int          `json:"pool_target"`
+	Need            int          `json:"need"`
+	NeedAccounts    bool         `json:"need_accounts"`
+	Pool            PoolSnapshot `json:"pool"`
+	SlavesOnline    int          `json:"slaves_online"`
+	SlavesTotal     int          `json:"slaves_total"`
+	Slaves          []Node       `json:"slaves,omitempty"`
+	Time            string       `json:"time"`
+}
+
 // ReportRequest is optional progress from a slave after finishing a batch.
 type ReportRequest struct {
 	NodeID    string `json:"node_id"`
@@ -110,24 +127,28 @@ type ReportRequest struct {
 
 // Status is the admin panel snapshot.
 type Status struct {
-	Role           string       `json:"role"`
-	NodeID         string       `json:"node_id"`
-	NodeName       string       `json:"node_name"`
-	PublicTokenSet bool         `json:"public_token_set"`
-	MasterURL      string       `json:"master_url"`
-	HeartbeatSec   int          `json:"heartbeat_sec"`
-	PoolTarget     int          `json:"pool_target"`
-	AssignMin      int          `json:"assign_min"`
-	AssignMax      int          `json:"assign_max"`
-	AutoRegister   bool         `json:"auto_register"`
-	AutoUpload     bool         `json:"auto_upload"`
-	SlaveConnected bool         `json:"slave_connected"`
-	SlaveLastError string       `json:"slave_last_error,omitempty"`
-	SlaveLastOK    *time.Time   `json:"slave_last_ok,omitempty"`
-	LastAssign     int          `json:"last_assign"`
-	Need           int          `json:"need"`
-	Pool           PoolSnapshot `json:"pool"`
-	Nodes          []Node       `json:"nodes"`
+	Role              string       `json:"role"`
+	NodeID            string       `json:"node_id"`
+	NodeName          string       `json:"node_name"`
+	PublicTokenSet    bool         `json:"public_token_set"`
+	StatusPasswordSet bool         `json:"status_password_set"`
+	MasterURL         string       `json:"master_url"`
+	MasterURLs        string       `json:"master_urls"`
+	Masters           []string     `json:"masters"`
+	MasterLinks       []MasterLink `json:"master_links,omitempty"`
+	HeartbeatSec      int          `json:"heartbeat_sec"`
+	PoolTarget        int          `json:"pool_target"`
+	AssignMin         int          `json:"assign_min"`
+	AssignMax         int          `json:"assign_max"`
+	AutoRegister      bool         `json:"auto_register"`
+	AutoUpload        bool         `json:"auto_upload"`
+	SlaveConnected    bool         `json:"slave_connected"`
+	SlaveLastError    string       `json:"slave_last_error,omitempty"`
+	SlaveLastOK       *time.Time   `json:"slave_last_ok,omitempty"`
+	LastAssign        int          `json:"last_assign"`
+	Need              int          `json:"need"`
+	Pool              PoolSnapshot `json:"pool"`
+	Nodes             []Node       `json:"nodes"`
 }
 
 type poolProvider func() PoolSnapshot
@@ -153,6 +174,7 @@ type Service struct {
 	slaveLastErr   string
 	slaveLastOK    *time.Time
 	lastAssign     int
+	masterLinks    []MasterLink
 }
 
 func New(statePath string, cfgFn func() config.Config) *Service {
@@ -250,6 +272,57 @@ func (s *Service) PublicInfo(token string) (PublicInfo, int, string) {
 		Time:         time.Now().UTC().Format(time.RFC3339),
 	}, 0, ""
 }
+
+// StatusPage returns the human-facing board. Password is independent of federation token.
+func (s *Service) StatusPage(password string) (StatusPage, int, string) {
+	cfg := s.cfgFn()
+	want := strings.TrimSpace(cfg.ClusterStatusPassword)
+	if want != "" {
+		got := strings.TrimSpace(password)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			return StatusPage{OK: false, AuthRequired: true, Service: "grok-panel-status"}, 401, "invalid status password"
+		}
+	}
+	pool := s.pool()
+	need := 0
+	role := normalizeRole(cfg.ClusterRole)
+	if role == RoleMaster {
+		need = s.need(cfg, pool)
+	}
+	online, total := s.nodeCounts()
+	nodes := s.listNodes()
+	// Only expose a slim public slave list (no remote addr noise optional — keep name/online/busy)
+	slaves := make([]Node, 0, len(nodes))
+	for _, n := range nodes {
+		slaves = append(slaves, Node{
+			ID:            n.ID,
+			Name:          n.Name,
+			LastSeen:      n.LastSeen,
+			Online:        n.Online,
+			Busy:          n.Busy,
+			Capacity:      n.Capacity,
+			Assigned:      n.Assigned,
+			Completed:     n.Completed,
+			RunningTarget: n.RunningTarget,
+		})
+	}
+	return StatusPage{
+		OK:           true,
+		Service:      "grok-panel-status",
+		Role:         role,
+		Name:         firstNonEmpty(cfg.ClusterNodeName, "node"),
+		AuthRequired: want != "",
+		PoolTarget:   cfg.ClusterPoolTarget,
+		Need:         need,
+		NeedAccounts: need > 0,
+		Pool:         pool,
+		SlavesOnline: online,
+		SlavesTotal:  total,
+		Slaves:       slaves,
+		Time:         time.Now().UTC().Format(time.RFC3339),
+	}, 0, ""
+}
+
 
 func (s *Service) Heartbeat(req HeartbeatRequest, remote string) (HeartbeatResponse, int, string) {
 	cfg := s.cfgFn()
@@ -368,25 +441,30 @@ func (s *Service) Status() Status {
 		need = s.need(cfg, pool)
 	}
 	nodes := s.listNodes()
+	masters := cfg.ClusterMasters()
 	s.slaveMu.Lock()
 	st := Status{
-		Role:           normalizeRole(cfg.ClusterRole),
-		NodeID:         s.nodeID,
-		NodeName:       firstNonEmpty(cfg.ClusterNodeName, s.nodeID[:min(8, len(s.nodeID))]),
-		PublicTokenSet: strings.TrimSpace(cfg.ClusterPublicToken) != "",
-		MasterURL:      cfg.ClusterMasterURL,
-		HeartbeatSec:   clamp(cfg.ClusterHeartbeatSec, 5, 300),
-		PoolTarget:     cfg.ClusterPoolTarget,
-		AssignMin:      clamp(cfg.ClusterAssignMin, 1, 10),
-		AssignMax:      clamp(cfg.ClusterAssignMax, 1, 10),
-		AutoRegister:   cfg.ClusterAutoRegister,
-		AutoUpload:     cfg.ClusterAutoUpload,
-		SlaveConnected: s.slaveConnected,
-		SlaveLastError: s.slaveLastErr,
-		LastAssign:     s.lastAssign,
-		Need:           need,
-		Pool:           pool,
-		Nodes:          nodes,
+		Role:              normalizeRole(cfg.ClusterRole),
+		NodeID:            s.nodeID,
+		NodeName:          firstNonEmpty(cfg.ClusterNodeName, s.nodeID[:min(8, len(s.nodeID))]),
+		PublicTokenSet:    strings.TrimSpace(cfg.ClusterPublicToken) != "",
+		StatusPasswordSet: strings.TrimSpace(cfg.ClusterStatusPassword) != "",
+		MasterURL:         cfg.ClusterMasterURL,
+		MasterURLs:        cfg.ClusterMasterURLs,
+		Masters:           masters,
+		MasterLinks:       append([]MasterLink(nil), s.masterLinks...),
+		HeartbeatSec:      clamp(cfg.ClusterHeartbeatSec, 5, 300),
+		PoolTarget:        cfg.ClusterPoolTarget,
+		AssignMin:         clamp(cfg.ClusterAssignMin, 1, 10),
+		AssignMax:         clamp(cfg.ClusterAssignMax, 1, 10),
+		AutoRegister:      cfg.ClusterAutoRegister,
+		AutoUpload:        cfg.ClusterAutoUpload,
+		SlaveConnected:    s.slaveConnected,
+		SlaveLastError:    s.slaveLastErr,
+		LastAssign:        s.lastAssign,
+		Need:              need,
+		Pool:              pool,
+		Nodes:             nodes,
 	}
 	if s.slaveLastOK != nil {
 		t := *s.slaveLastOK

@@ -17,15 +17,16 @@ import { api, type ClusterStatus, type PanelConfig } from "@/lib/api";
 const ROLE_OPTIONS = [
   { value: "standalone", label: "独立（不参与主从）" },
   { value: "master", label: "主节点 — 暴露需求 / 调度从节点" },
-  { value: "slave", label: "从节点 — 连接主节点自动补号" },
+  { value: "slave", label: "从节点 — 可连接多个主" },
 ] as const;
 
 export default function ClusterPage() {
   const [cluster, setCluster] = useState<ClusterStatus | null>(null);
   const [role, setRole] = useState("standalone");
   const [nodeName, setNodeName] = useState("");
-  const [masterURL, setMasterURL] = useState("");
+  const [masterURLs, setMasterURLs] = useState("");
   const [publicToken, setPublicToken] = useState("");
+  const [statusPassword, setStatusPassword] = useState("");
   const [poolTarget, setPoolTarget] = useState("50");
   const [assignMin, setAssignMin] = useState("1");
   const [assignMax, setAssignMax] = useState("10");
@@ -45,7 +46,10 @@ export default function ClusterPage() {
     const c = cfg.config;
     setRole(String(c.cluster_role || "standalone"));
     setNodeName(String(c.cluster_node_name || ""));
-    setMasterURL(String(c.cluster_master_url || ""));
+    const urls =
+      String(c.cluster_master_urls || "") ||
+      String(c.cluster_master_url || "");
+    setMasterURLs(urls);
     setPoolTarget(String(c.cluster_pool_target ?? 50));
     setAssignMin(String(c.cluster_assign_min ?? 1));
     setAssignMax(String(c.cluster_assign_max ?? 10));
@@ -73,7 +77,7 @@ export default function ClusterPage() {
       const body: Record<string, string | number | boolean> = {
         cluster_role: role,
         cluster_node_name: nodeName,
-        cluster_master_url: masterURL,
+        cluster_master_urls: masterURLs,
         cluster_pool_target: parseInt(poolTarget, 10) || 0,
         cluster_assign_min: parseInt(assignMin, 10) || 1,
         cluster_assign_max: parseInt(assignMax, 10) || 10,
@@ -81,9 +85,22 @@ export default function ClusterPage() {
         cluster_auto_register: autoRegister,
         cluster_auto_upload: autoUpload,
       };
+      // keep legacy single field as first line
+      const first = masterURLs
+        .split(/[\n,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)[0];
+      if (first) body.cluster_master_url = first;
       if (publicToken.trim()) body.cluster_public_token = publicToken.trim();
+      if (statusPassword.trim() || statusPassword === "") {
+        // allow explicit clear with single space? only set when user typed something
+      }
+      if (statusPassword.length > 0) {
+        body.cluster_status_password = statusPassword;
+      }
       await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
       setPublicToken("");
+      setStatusPassword("");
       setMsg("已保存主从配置");
       await load();
     } catch (e) {
@@ -110,11 +127,13 @@ export default function ClusterPage() {
     }
   }
 
+  const links = cluster?.master_links || [];
+
   return (
     <AdminShell>
       <PageHeader
         title="主从调度"
-        description="主节点暴露缺口；从节点定时心跳，按分配自动注册 1–10 并上传"
+        description="主暴露缺口；从可连多个主，按最大分配自动注册 1–10"
         actions={
           <Button size="sm" loading={busy} onClick={() => void save()}>
             保存配置
@@ -147,16 +166,16 @@ export default function ClusterPage() {
                 label="节点名称"
                 value={nodeName}
                 onChange={(e) => setNodeName(e.target.value)}
-                placeholder="可选，显示在主节点列表"
+                placeholder="可选"
               />
               <Input
-                label="主节点 URL（从节点填写）"
-                value={masterURL}
-                onChange={(e) => setMasterURL(e.target.value)}
-                placeholder="https://panel.example.com"
+                label="主节点 URL 列表（从节点，每行一个或逗号分隔）"
+                value={masterURLs}
+                onChange={(e) => setMasterURLs(e.target.value)}
+                placeholder={"https://master-a.example.com\nhttps://master-b.example.com"}
               />
               <Input
-                label="联邦密钥（可选，主从一致）"
+                label="联邦密钥（主从一致，可选）"
                 type="password"
                 value={publicToken}
                 onChange={(e) => setPublicToken(e.target.value)}
@@ -164,12 +183,27 @@ export default function ClusterPage() {
                   cluster?.public_token_set ? "已设置 · 留空不改" : "可选"
                 }
               />
+              <Input
+                label="状态页密码（与联邦密钥独立；空=公开）"
+                type="password"
+                value={statusPassword}
+                onChange={(e) => setStatusPassword(e.target.value)}
+                placeholder={
+                  cluster?.status_password_set
+                    ? "已设置 · 留空不改"
+                    : "可选，独立于联邦密钥"
+                }
+              />
+              <Text size="xs" variant="secondary">
+                公网状态页：<code>/status/</code> · API{" "}
+                <code>/api/public/status</code>
+              </Text>
             </div>
           </LayerCard.Primary>
         </LayerCard>
 
         <LayerCard>
-          <LayerCard.Secondary>主节点策略 / 从节点行为</LayerCard.Secondary>
+          <LayerCard.Secondary>主策略 / 从行为</LayerCard.Secondary>
           <LayerCard.Primary>
             <div className="flex flex-col gap-3">
               <Input
@@ -195,7 +229,7 @@ export default function ClusterPage() {
                 onChange={(e) => setHeartbeat(e.target.value)}
               />
               <Switch
-                label="从节点自动注册（收到分配后 start）"
+                label="从节点自动注册"
                 checked={autoRegister}
                 onCheckedChange={(v) => setAutoRegister(!!v)}
               />
@@ -224,19 +258,49 @@ export default function ClusterPage() {
       {cluster?.role === "slave" ? (
         <div className="mb-4">
           <LayerCard>
-            <LayerCard.Secondary>从节点状态</LayerCard.Secondary>
+            <LayerCard.Secondary>
+              已配置主节点{" "}
+              {cluster.slave_connected ? (
+                <Badge variant="primary">至少一个在线</Badge>
+              ) : (
+                <Badge variant="secondary">未连接</Badge>
+              )}
+            </LayerCard.Secondary>
             <LayerCard.Primary>
-              <Text size="sm">
-                {cluster.slave_connected ? (
-                  <Badge variant="primary">已连接主节点</Badge>
-                ) : (
-                  <Badge variant="secondary">未连接</Badge>
-                )}{" "}
-                上次分配 {cluster.last_assign || 0}
-                {cluster.slave_last_error
-                  ? ` · 错误：${cluster.slave_last_error}`
-                  : ""}
-              </Text>
+              {links.length === 0 ? (
+                <Text variant="secondary">
+                  尚未心跳 · 配置多个主 URL 后自动轮询
+                  {cluster.slave_last_error
+                    ? ` · ${cluster.slave_last_error}`
+                    : ""}
+                </Text>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {links.map((l) => (
+                    <div
+                      key={l.url}
+                      className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2 last:border-0"
+                    >
+                      <div className="min-w-0">
+                        <Text size="sm">
+                          {l.master_name || l.url}{" "}
+                          <Badge variant={l.ok ? "primary" : "secondary"}>
+                            {l.ok ? "ok" : "down"}
+                          </Badge>
+                        </Text>
+                        <Text size="xs" variant="secondary">
+                          {l.url} · need {l.need} · assign {l.last_assign}
+                          {l.last_error ? ` · ${l.last_error}` : ""}
+                        </Text>
+                      </div>
+                    </div>
+                  ))}
+                  <Text size="xs" variant="secondary">
+                    上次选用分配 {cluster.last_assign || 0}（取各主最大
+                    assign）
+                  </Text>
+                </div>
+              )}
             </LayerCard.Primary>
           </LayerCard>
         </div>
@@ -285,15 +349,14 @@ export default function ClusterPage() {
 
       <LayerCard>
         <LayerCard.Secondary>
-          公网联邦信息{" "}
+          联邦 info{" "}
           <Button size="sm" variant="ghost" onClick={() => void probePublic()}>
             探测 /api/federation/info
           </Button>
         </LayerCard.Secondary>
         <LayerCard.Primary>
           <pre className="max-h-64 overflow-auto text-xs">
-            {pubInfo ||
-              "主节点可将此 URL 暴露给从节点。可选 CLUSTER_PUBLIC_TOKEN。"}
+            {pubInfo || "主从通信用；状态页请用 /status/"}
           </pre>
         </LayerCard.Primary>
       </LayerCard>
@@ -306,7 +369,9 @@ function Stat({ label, value }: { label: string; value: string }) {
     <LayerCard>
       <LayerCard.Secondary>{label}</LayerCard.Secondary>
       <LayerCard.Primary>
-        <Text variant="heading3" as="h3">{value}</Text>
+        <Text variant="heading3" as="h3">
+          {value}
+        </Text>
       </LayerCard.Primary>
     </LayerCard>
   );

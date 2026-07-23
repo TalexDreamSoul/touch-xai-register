@@ -209,6 +209,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/federation/info", s.handleFederationInfo)
 	s.mux.HandleFunc("POST /api/federation/heartbeat", s.handleFederationHeartbeat)
 	s.mux.HandleFunc("POST /api/federation/report", s.handleFederationReport)
+	s.mux.HandleFunc("GET /api/public/status", s.handlePublicStatus)
+	s.mux.HandleFunc("POST /api/public/status", s.handlePublicStatus)
 	// Admin (panel token)
 	s.mux.HandleFunc("GET /api/cluster/status", s.handleClusterStatus)
 	s.mux.HandleFunc("POST /api/cluster/kick", s.handleClusterKick)
@@ -279,6 +281,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		// Federation endpoints use optional CLUSTER_PUBLIC_TOKEN instead of PANEL_TOKEN.
 		if r.URL.Path == "/api/health" ||
 			strings.HasPrefix(r.URL.Path, "/api/federation/") ||
+			r.URL.Path == "/api/public/status" ||
 			!strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
@@ -775,6 +778,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"cluster_node_name":            cfg.ClusterNodeName,
 		"cluster_public_token_set":     strings.TrimSpace(cfg.ClusterPublicToken) != "",
 		"cluster_master_url":           cfg.ClusterMasterURL,
+		"cluster_master_urls":          cfg.ClusterMasterURLs,
+		"cluster_status_password_set":  strings.TrimSpace(cfg.ClusterStatusPassword) != "",
 		"cluster_heartbeat_sec":        cfg.ClusterHeartbeatSec,
 		"cluster_pool_target":          cfg.ClusterPoolTarget,
 		"cluster_assign_min":           cfg.ClusterAssignMin,
@@ -825,16 +830,18 @@ type configUpdate struct {
 	CleanupBackup       *bool `json:"cleanup_backup"`
 	CleanupDryRun       *bool `json:"cleanup_dry_run"`
 
-	ClusterRole         *string `json:"cluster_role"`
-	ClusterNodeName     *string `json:"cluster_node_name"`
-	ClusterPublicToken  *string `json:"cluster_public_token"`
-	ClusterMasterURL    *string `json:"cluster_master_url"`
-	ClusterHeartbeatSec *int    `json:"cluster_heartbeat_sec"`
-	ClusterPoolTarget   *int    `json:"cluster_pool_target"`
-	ClusterAssignMin    *int    `json:"cluster_assign_min"`
-	ClusterAssignMax    *int    `json:"cluster_assign_max"`
-	ClusterAutoRegister *bool   `json:"cluster_auto_register"`
-	ClusterAutoUpload   *bool   `json:"cluster_auto_upload"`
+	ClusterRole           *string `json:"cluster_role"`
+	ClusterNodeName       *string `json:"cluster_node_name"`
+	ClusterPublicToken    *string `json:"cluster_public_token"`
+	ClusterMasterURL      *string `json:"cluster_master_url"`
+	ClusterMasterURLs     *string `json:"cluster_master_urls"`
+	ClusterStatusPassword *string `json:"cluster_status_password"`
+	ClusterHeartbeatSec   *int    `json:"cluster_heartbeat_sec"`
+	ClusterPoolTarget     *int    `json:"cluster_pool_target"`
+	ClusterAssignMin      *int    `json:"cluster_assign_min"`
+	ClusterAssignMax      *int    `json:"cluster_assign_max"`
+	ClusterAutoRegister   *bool   `json:"cluster_auto_register"`
+	ClusterAutoUpload     *bool   `json:"cluster_auto_upload"`
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -963,8 +970,20 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if u.ClusterNodeName != nil {
 		cfg.ClusterNodeName = strings.TrimSpace(*u.ClusterNodeName)
 	}
+	if u.ClusterPublicToken != nil {
+		cfg.ClusterPublicToken = strings.TrimSpace(*u.ClusterPublicToken)
+	}
 	if u.ClusterMasterURL != nil {
 		cfg.ClusterMasterURL = strings.TrimRight(strings.TrimSpace(*u.ClusterMasterURL), "/")
+	}
+	if u.ClusterMasterURLs != nil {
+		cfg.ClusterMasterURLs = *u.ClusterMasterURLs
+		// normalize to comma-separated single-line for config.env safety
+		ms := cfg.ClusterMasters()
+		cfg.ClusterMasterURLs = strings.Join(ms, ",")
+		if len(ms) > 0 {
+			cfg.ClusterMasterURL = ms[0]
+		}
 	}
 	if u.ClusterHeartbeatSec != nil {
 		cfg.ClusterHeartbeatSec = *u.ClusterHeartbeatSec
@@ -984,16 +1003,23 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if u.ClusterAutoUpload != nil {
 		cfg.ClusterAutoUpload = *u.ClusterAutoUpload
 	}
+	if u.ClusterStatusPassword != nil {
+		cfg.ClusterStatusPassword = *u.ClusterStatusPassword
+	}
 	if err := config.Save(s.opt.Paths.Config, cfg); err != nil {
 		writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	// re-read key into env file manually if set (Save skips writing key)
-	if u.CPAManagementKey != nil && *u.CPAManagementKey != "" {
-		_ = appendEnvKey(s.opt.Paths.Config, "CPA_MANAGEMENT_KEY", *u.CPAManagementKey)
+	// Secrets intentionally omitted by config.Save — re-append from merged cfg every time.
+	if strings.TrimSpace(cfg.CPAManagementKey) != "" {
+		_ = appendEnvKey(s.opt.Paths.Config, "CPA_MANAGEMENT_KEY", cfg.CPAManagementKey)
 	}
-	if u.ClusterPublicToken != nil {
-		_ = appendEnvKey(s.opt.Paths.Config, "CLUSTER_PUBLIC_TOKEN", *u.ClusterPublicToken)
+	if strings.TrimSpace(cfg.ClusterPublicToken) != "" {
+		_ = appendEnvKey(s.opt.Paths.Config, "CLUSTER_PUBLIC_TOKEN", cfg.ClusterPublicToken)
+	}
+	// status password may be intentionally empty (open board); only rewrite when set in memory
+	if u.ClusterStatusPassword != nil || strings.TrimSpace(cfg.ClusterStatusPassword) != "" {
+		_ = appendEnvKey(s.opt.Paths.Config, "CLUSTER_STATUS_PASSWORD", cfg.ClusterStatusPassword)
 	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }

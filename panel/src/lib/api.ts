@@ -91,13 +91,26 @@ export type ClusterNode = {
   last_error?: string;
   remote_addr?: string;
 };
+export type MasterLink = {
+  url: string;
+  ok: boolean;
+  last_error?: string;
+  last_ok?: string;
+  last_assign: number;
+  need: number;
+  master_name?: string;
+};
 
 export type ClusterStatus = {
   role: string;
   node_id: string;
   node_name: string;
   public_token_set: boolean;
+  status_password_set?: boolean;
   master_url: string;
+  master_urls?: string;
+  masters?: string[];
+  master_links?: MasterLink[];
   heartbeat_sec: number;
   pool_target: number;
   assign_min: number;
