@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -571,29 +572,102 @@ func ApplyProxyEnv(cfg Config) {
 	}
 }
 
+// MasterEndpoint is one federation master a slave may connect to.
+// Token overrides the global ClusterPublicToken when non-empty.
+type MasterEndpoint struct {
+	URL   string `json:"url"`
+	Token string `json:"token,omitempty"`
+}
 
-// ClusterMasters returns de-duplicated master base URLs for a slave node.
-// Prefers CLUSTER_MASTER_URLS (comma/newline/space separated); falls back to CLUSTER_MASTER_URL.
-func (cfg Config) ClusterMasters() []string {
-	raw := cfg.ClusterMasterURLs
-	if strings.TrimSpace(raw) == "" {
-		raw = cfg.ClusterMasterURL
+// ClusterMasterEndpoints returns de-duplicated master endpoints for a slave.
+// CLUSTER_MASTER_URLS accepts:
+//   - plain URLs separated by comma/newline/space
+//   - JSON array: [{"url":"https://m","token":"secret"}]
+//   - lines "url|token"
+// Falls back to CLUSTER_MASTER_URL; empty token falls back to ClusterPublicToken at call site.
+func (cfg Config) ClusterMasterEndpoints() []MasterEndpoint {
+	raw := strings.TrimSpace(cfg.ClusterMasterURLs)
+	if raw == "" {
+		raw = strings.TrimSpace(cfg.ClusterMasterURL)
+	}
+	if raw == "" {
+		return nil
+	}
+	// JSON array form
+	if strings.HasPrefix(raw, "[") {
+		var arr []MasterEndpoint
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			return dedupeMasterEndpoints(arr)
+		}
 	}
 	// UI may send real newlines or the two-char sequence \n
-	raw = strings.ReplaceAll(raw, "\\n", "\n")
-	raw = strings.ReplaceAll(raw, "\\r", "\r")
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		switch r {
-		case ',', ';', '\n', '\r', '\t', ' ':
-			return true
-		default:
-			return false
-		}
+	raw = strings.ReplaceAll(raw, `\n`, "\n")
+	raw = strings.ReplaceAll(raw, `\r`, "\r")
+	// Prefer line-oriented parse so "url|token" works
+	lines := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
 	})
+	var out []MasterEndpoint
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var u, tok string
+		if i := strings.IndexAny(line, "|\t"); i >= 0 {
+			u = strings.TrimSpace(line[:i])
+			tok = strings.TrimSpace(line[i+1:])
+		} else {
+			parts := strings.Fields(line)
+			if len(parts) == 0 {
+				continue
+			}
+			u = parts[0]
+			if len(parts) > 1 {
+				tok = parts[1]
+			}
+		}
+		u = strings.TrimRight(u, "/")
+		if u == "" {
+			continue
+		}
+		out = append(out, MasterEndpoint{URL: u, Token: tok})
+	}
+	return dedupeMasterEndpoints(out)
+}
+
+// ClusterMasters returns de-duplicated master base URLs (legacy).
+func (cfg Config) ClusterMasters() []string {
+	eps := cfg.ClusterMasterEndpoints()
+	out := make([]string, 0, len(eps))
+	for _, e := range eps {
+		out = append(out, e.URL)
+	}
+	return out
+}
+
+// FormatMasterEndpoints serializes endpoints as JSON for CLUSTER_MASTER_URLS.
+func FormatMasterEndpoints(eps []MasterEndpoint) string {
+	eps = dedupeMasterEndpoints(eps)
+	if len(eps) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(eps)
+	if err != nil {
+		var urls []string
+		for _, e := range eps {
+			urls = append(urls, e.URL)
+		}
+		return strings.Join(urls, ",")
+	}
+	return string(b)
+}
+
+func dedupeMasterEndpoints(in []MasterEndpoint) []MasterEndpoint {
 	seen := map[string]struct{}{}
-	var out []string
-	for _, part := range parts {
-		u := strings.TrimRight(strings.TrimSpace(part), "/")
+	var out []MasterEndpoint
+	for _, e := range in {
+		u := strings.TrimRight(strings.TrimSpace(e.URL), "/")
 		if u == "" {
 			continue
 		}
@@ -601,8 +675,7 @@ func (cfg Config) ClusterMasters() []string {
 			continue
 		}
 		seen[u] = struct{}{}
-		out = append(out, u)
+		out = append(out, MasterEndpoint{URL: u, Token: strings.TrimSpace(e.Token)})
 	}
 	return out
 }
-

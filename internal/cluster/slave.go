@@ -29,7 +29,7 @@ func (s *Service) slaveLoop(ctx context.Context) {
 	for {
 		cfg := s.cfgFn()
 		sec := clamp(cfg.ClusterHeartbeatSec, 5, 300)
-		masters := cfg.ClusterMasters()
+		masters := cfg.ClusterMasterEndpoints()
 		if normalizeRole(cfg.ClusterRole) != RoleSlave || len(masters) == 0 {
 			s.setSlaveMeta(false, "未启用从节点或未配置主地址", nil)
 			s.setMasterLinks(nil)
@@ -69,17 +69,15 @@ func (s *Service) setMasterLinks(links []MasterLink) {
 	s.masterLinks = links
 }
 
-func (s *Service) slaveTickMulti(client *http.Client, cfg config.Config, masters []string) error {
-	busy := s.runningFn != nil && s.runningFn()
-	reqBody := HeartbeatRequest{
-		NodeID:   s.nodeID,
-		Name:     firstNonEmpty(cfg.ClusterNodeName, s.nodeID[:min(8, len(s.nodeID))]),
-		Capacity: clamp(cfg.ClusterAssignMax, 1, 10),
-		Busy:     busy,
-		Token:    cfg.ClusterPublicToken,
-		Version:  "0.2.0-panel",
+func masterToken(cfg config.Config, ep config.MasterEndpoint) string {
+	if t := strings.TrimSpace(ep.Token); t != "" {
+		return t
 	}
-	raw, _ := json.Marshal(reqBody)
+	return strings.TrimSpace(cfg.ClusterPublicToken)
+}
+
+func (s *Service) slaveTickMulti(client *http.Client, cfg config.Config, masters []config.MasterEndpoint) error {
+	busy := s.runningFn != nil && s.runningFn()
 
 	links := make([]MasterLink, 0, len(masters))
 	var (
@@ -89,7 +87,18 @@ func (s *Service) slaveTickMulti(client *http.Client, cfg config.Config, masters
 		errs       []string
 	)
 
-	for _, base := range masters {
+	for _, ep := range masters {
+		base := ep.URL
+		tok := masterToken(cfg, ep)
+		reqBody := HeartbeatRequest{
+			NodeID:   s.nodeID,
+			Name:     firstNonEmpty(cfg.ClusterNodeName, s.nodeID[:min(8, len(s.nodeID))]),
+			Capacity: clamp(cfg.ClusterAssignMax, 1, 10),
+			Busy:     busy,
+			Token:    tok,
+			Version:  "0.2.0-panel",
+		}
+		raw, _ := json.Marshal(reqBody)
 		link := MasterLink{URL: base}
 		url := base + "/api/federation/heartbeat"
 		httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
@@ -100,7 +109,7 @@ func (s *Service) slaveTickMulti(client *http.Client, cfg config.Config, masters
 			continue
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
-		if tok := strings.TrimSpace(cfg.ClusterPublicToken); tok != "" {
+		if tok != "" {
 			httpReq.Header.Set("X-Cluster-Token", tok)
 		}
 		resp, err := client.Do(httpReq)
@@ -175,7 +184,7 @@ func (s *Service) slaveTickMulti(client *http.Client, cfg config.Config, masters
 	return nil
 }
 
-func (s *Service) afterAssignMulti(client *http.Client, cfg config.Config, masters []string, preferred string, target int) {
+func (s *Service) afterAssignMulti(client *http.Client, cfg config.Config, masters []config.MasterEndpoint, preferred string, target int) {
 	deadline := time.Now().Add(6 * time.Hour)
 	for time.Now().Before(deadline) {
 		time.Sleep(5 * time.Second)
@@ -193,34 +202,43 @@ func (s *Service) afterAssignMulti(client *http.Client, cfg config.Config, maste
 			s.slaveMu.Unlock()
 		}
 	}
-	rep := ReportRequest{
-		NodeID:    s.nodeID,
-		Name:      firstNonEmpty(cfg.ClusterNodeName, s.nodeID),
-		Completed: target,
-		Uploaded:  uploaded,
-		Failed:    failed,
-		Token:     cfg.ClusterPublicToken,
-		Message:   fmt.Sprintf("batch target=%d uploaded=%d failed=%d", target, uploaded, failed),
-	}
-	raw, _ := json.Marshal(rep)
 	// preferred first, then the rest
-	order := make([]string, 0, len(masters))
-	if preferred != "" {
-		order = append(order, preferred)
+	order := make([]config.MasterEndpoint, 0, len(masters))
+	var prefEP *config.MasterEndpoint
+	for i := range masters {
+		if masters[i].URL == preferred {
+			ep := masters[i]
+			prefEP = &ep
+			break
+		}
+	}
+	if prefEP != nil {
+		order = append(order, *prefEP)
 	}
 	for _, m := range masters {
-		if m != preferred {
+		if m.URL != preferred {
 			order = append(order, m)
 		}
 	}
-	for _, base := range order {
-		url := base + "/api/federation/report"
+	for _, ep := range order {
+		tok := masterToken(cfg, ep)
+		rep := ReportRequest{
+			NodeID:    s.nodeID,
+			Name:      firstNonEmpty(cfg.ClusterNodeName, s.nodeID),
+			Completed: target,
+			Uploaded:  uploaded,
+			Failed:    failed,
+			Token:     tok,
+			Message:   fmt.Sprintf("batch target=%d uploaded=%d failed=%d", target, uploaded, failed),
+		}
+		raw, _ := json.Marshal(rep)
+		url := ep.URL + "/api/federation/report"
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
 		if err != nil {
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if tok := strings.TrimSpace(cfg.ClusterPublicToken); tok != "" {
+		if tok != "" {
 			req.Header.Set("X-Cluster-Token", tok)
 		}
 		resp, err := client.Do(req)

@@ -25,22 +25,22 @@ const MASTER_PAGE_SIZE = 8;
 
 type TabKey = "role" | "masters" | "policy" | "runtime";
 
-function parseMasterList(raw: string): string[] {
-  return raw
-    .split(/[\n,;]+/)
-    .map((s) => s.trim().replace(/\/$/, ""))
-    .filter(Boolean);
-}
+type MasterRow = {
+  url: string;
+  token: string; // draft token; empty means keep existing / use global
+  tokenSet: boolean; // server had a per-master token
+};
 
-function joinMasters(list: string[]): string {
-  return list.join("\n");
-}
+type MasterEndpointView = {
+  url?: string;
+  token_set?: boolean;
+};
 
 function CardSaveBar({
   dirty,
   busy,
   onSave,
-  label = "保存此卡片",
+  label = "保存",
 }: {
   dirty: boolean;
   busy: boolean;
@@ -48,24 +48,46 @@ function CardSaveBar({
   label?: string;
 }) {
   return (
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-kumo-hairline pt-3">
-      <div>
-        {dirty ? (
-          <Badge variant="primary">未保存</Badge>
-        ) : (
-          <Badge variant="secondary">已保存</Badge>
-        )}
-      </div>
-      <Button
-        size="lg"
-        loading={busy}
-        disabled={!dirty && !busy}
-        onClick={onSave}
-        className="!h-11 !min-w-[140px] !px-6 !text-base !font-semibold"
-      >
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-kumo-hairline pt-3">
+      {dirty ? (
+        <Badge variant="primary">未保存</Badge>
+      ) : (
+        <Badge variant="secondary">已保存</Badge>
+      )}
+      <Button size="sm" loading={busy} disabled={!dirty && !busy} onClick={onSave}>
         {label}
       </Button>
     </div>
+  );
+}
+
+function parseLegacyMasters(raw: string): MasterRow[] {
+  return raw
+    .split(/[\n,;]+/)
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean)
+    .map((url) => ({ url, token: "", tokenSet: false }));
+}
+
+function serializeMasters(rows: MasterRow[]): string {
+  // Persist as JSON so per-master tokens survive
+  const payload = rows
+    .map((r) => ({
+      url: r.url.replace(/\/$/, ""),
+      token: r.token.trim(),
+    }))
+    .filter((r) => r.url);
+  // If no tokens at all, still use JSON for stable round-trip
+  return JSON.stringify(payload);
+}
+
+function mastersFingerprint(rows: MasterRow[]): string {
+  return JSON.stringify(
+    rows.map((r) => ({
+      url: r.url.replace(/\/$/, ""),
+      token: r.token,
+      tokenSet: r.tokenSet,
+    })),
   );
 }
 
@@ -75,10 +97,12 @@ export default function ClusterPage() {
 
   const [role, setRole] = useState("standalone");
   const [nodeName, setNodeName] = useState("");
-  const [masters, setMasters] = useState<string[]>([]);
-  const [newMaster, setNewMaster] = useState("");
+  const [masters, setMasters] = useState<MasterRow[]>([]);
+  const [newMasterURL, setNewMasterURL] = useState("");
+  const [newMasterToken, setNewMasterToken] = useState("");
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [editURL, setEditURL] = useState("");
+  const [editToken, setEditToken] = useState("");
   const [masterPage, setMasterPage] = useState(1);
 
   const [publicToken, setPublicToken] = useState("");
@@ -115,7 +139,7 @@ export default function ClusterPage() {
     nodeName !== saved.nodeName ||
     publicToken.trim().length > 0 ||
     statusPassword.length > 0;
-  const dirtyMasters = joinMasters(masters) !== saved.masters;
+  const dirtyMasters = mastersFingerprint(masters) !== saved.masters;
   const dirtyPolicy =
     poolTarget !== saved.poolTarget ||
     assignMin !== saved.assignMin ||
@@ -130,16 +154,32 @@ export default function ClusterPage() {
   async function load() {
     const [cl, cfg] = await Promise.all([
       api<{ cluster: ClusterStatus }>("/api/cluster/status"),
-      api<{ config: PanelConfig }>("/api/config"),
+      api<{ config: PanelConfig & { cluster_master_endpoints?: MasterEndpointView[] } }>(
+        "/api/config",
+      ),
     ]);
     setCluster(cl.cluster);
     const c = cfg.config;
     const nextRole = String(c.cluster_role || "standalone");
     const nextName = String(c.cluster_node_name || "");
-    const urls =
-      String(c.cluster_master_urls || "") ||
-      String(c.cluster_master_url || "");
-    const nextMasters = parseMasterList(urls);
+
+    let nextMasters: MasterRow[] = [];
+    const eps = c.cluster_master_endpoints;
+    if (Array.isArray(eps) && eps.length > 0) {
+      nextMasters = eps
+        .map((e) => ({
+          url: String(e.url || "").replace(/\/$/, ""),
+          token: "",
+          tokenSet: !!e.token_set,
+        }))
+        .filter((e) => e.url);
+    } else {
+      const urls =
+        String(c.cluster_master_urls || "") ||
+        String(c.cluster_master_url || "");
+      nextMasters = parseLegacyMasters(urls);
+    }
+
     const nextPool = String(c.cluster_pool_target ?? 50);
     const nextMin = String(c.cluster_assign_min ?? 1);
     const nextMax = String(c.cluster_assign_max ?? 10);
@@ -162,10 +202,13 @@ export default function ClusterPage() {
     setSharePoolPull(nextSP);
     setPublicToken("");
     setStatusPassword("");
+    setEditIdx(null);
+    setEditURL("");
+    setEditToken("");
     setSaved({
       role: nextRole,
       nodeName: nextName,
-      masters: joinMasters(nextMasters),
+      masters: mastersFingerprint(nextMasters),
       poolTarget: nextPool,
       assignMin: nextMin,
       assignMax: nextMax,
@@ -188,13 +231,6 @@ export default function ClusterPage() {
     }, 5000);
     return () => clearInterval(t);
   }, []);
-
-  // when role changes, jump to relevant tab
-  useEffect(() => {
-    if (role === "slave" && tab === "policy") {
-      // keep
-    }
-  }, [role, tab]);
 
   async function savePatch(body: Record<string, string | number | boolean>) {
     setBusy(true);
@@ -223,11 +259,39 @@ export default function ClusterPage() {
   }
 
   async function saveMastersCard() {
-    const list = masters.map((u) => u.replace(/\/$/, "")).filter(Boolean);
+    // When editing, keep previous per-master tokens if user left token blank
+    // by merging with server JSON: blank token means "keep" via re-fetch merge.
+    // Server stores only what we send; blank token clears per-master and falls back to global.
+    // If tokenSet and token empty → omit token field by reloading existing from server first.
+    const cfg = await api<{
+      config: { cluster_master_urls?: string; cluster_master_url?: string };
+    }>("/api/config");
+    let existing: MasterRow[] = [];
+    const raw = String(cfg.config.cluster_master_urls || "");
+    if (raw.trim().startsWith("[")) {
+      try {
+        const arr = JSON.parse(raw) as Array<{ url?: string; token?: string }>;
+        existing = arr.map((e) => ({
+          url: String(e.url || "").replace(/\/$/, ""),
+          token: String(e.token || ""),
+          tokenSet: !!e.token,
+        }));
+      } catch {
+        existing = [];
+      }
+    }
+    const byURL = new Map(existing.map((e) => [e.url, e]));
+    const merged = masters.map((r) => {
+      const url = r.url.replace(/\/$/, "");
+      const prev = byURL.get(url);
+      let token = r.token.trim();
+      if (!token && prev?.token) token = prev.token; // keep previous secret
+      return { url, token, tokenSet: !!token };
+    });
     const body: Record<string, string | number | boolean> = {
-      cluster_master_urls: joinMasters(list),
+      cluster_master_urls: serializeMasters(merged),
     };
-    if (list[0]) body.cluster_master_url = list[0];
+    if (merged[0]) body.cluster_master_url = merged[0].url;
     else body.cluster_master_url = "";
     await savePatch(body);
   }
@@ -249,11 +313,37 @@ export default function ClusterPage() {
     setBusy(true);
     setMsg("");
     try {
-      const list = masters.map((u) => u.replace(/\/$/, "")).filter(Boolean);
+      // masters merge keep tokens
+      const cfg = await api<{
+        config: { cluster_master_urls?: string };
+      }>("/api/config");
+      let existing: MasterRow[] = [];
+      const raw = String(cfg.config.cluster_master_urls || "");
+      if (raw.trim().startsWith("[")) {
+        try {
+          const arr = JSON.parse(raw) as Array<{ url?: string; token?: string }>;
+          existing = arr.map((e) => ({
+            url: String(e.url || "").replace(/\/$/, ""),
+            token: String(e.token || ""),
+            tokenSet: !!e.token,
+          }));
+        } catch {
+          existing = [];
+        }
+      }
+      const byURL = new Map(existing.map((e) => [e.url, e]));
+      const merged = masters.map((r) => {
+        const url = r.url.replace(/\/$/, "");
+        const prev = byURL.get(url);
+        let token = r.token.trim();
+        if (!token && prev?.token) token = prev.token;
+        return { url, token, tokenSet: !!token };
+      });
+
       const body: Record<string, string | number | boolean> = {
         cluster_role: role,
         cluster_node_name: nodeName,
-        cluster_master_urls: joinMasters(list),
+        cluster_master_urls: serializeMasters(merged),
         cluster_pool_target: parseInt(poolTarget, 10) || 0,
         cluster_assign_min: parseInt(assignMin, 10) || 1,
         cluster_assign_max: parseInt(assignMax, 10) || 10,
@@ -263,7 +353,7 @@ export default function ClusterPage() {
         cluster_share_pool_list: sharePoolList,
         cluster_share_pool_pull: sharePoolPull,
       };
-      if (list[0]) body.cluster_master_url = list[0];
+      if (merged[0]) body.cluster_master_url = merged[0].url;
       else body.cluster_master_url = "";
       if (publicToken.trim()) body.cluster_public_token = publicToken.trim();
       if (statusPassword.length > 0) {
@@ -299,14 +389,22 @@ export default function ClusterPage() {
   }
 
   function addMaster() {
-    const u = newMaster.trim().replace(/\/$/, "");
+    const u = newMasterURL.trim().replace(/\/$/, "");
     if (!u) return;
-    if (masters.includes(u)) {
+    if (masters.some((m) => m.url === u)) {
       setMsg("该主节点 URL 已存在");
       return;
     }
-    setMasters((prev) => [u, ...prev]);
-    setNewMaster("");
+    setMasters((prev) => [
+      {
+        url: u,
+        token: newMasterToken.trim(),
+        tokenSet: !!newMasterToken.trim(),
+      },
+      ...prev,
+    ]);
+    setNewMasterURL("");
+    setNewMasterToken("");
     setMasterPage(1);
   }
 
@@ -315,23 +413,40 @@ export default function ClusterPage() {
     if (editIdx === i) {
       setEditIdx(null);
       setEditURL("");
+      setEditToken("");
     }
   }
 
   function startEdit(i: number) {
     setEditIdx(i);
-    setEditURL(masters[i] || "");
+    setEditURL(masters[i]?.url || "");
+    setEditToken(""); // re-enter to change; blank keeps
   }
 
   function commitEdit() {
     if (editIdx == null) return;
     const u = editURL.trim().replace(/\/$/, "");
     if (!u) return;
-    setMasters((prev) =>
-      prev.map((m, i) => (i === editIdx ? u : m)).filter((m, i, arr) => arr.indexOf(m) === i),
-    );
+    setMasters((prev) => {
+      const next = prev.map((m, i) => {
+        if (i !== editIdx) return m;
+        return {
+          url: u,
+          token: editToken.trim() ? editToken.trim() : m.token,
+          tokenSet: editToken.trim() ? true : m.tokenSet,
+        };
+      });
+      // dedupe by url keep first
+      const seen = new Set<string>();
+      return next.filter((m) => {
+        if (seen.has(m.url)) return false;
+        seen.add(m.url);
+        return true;
+      });
+    });
     setEditIdx(null);
     setEditURL("");
+    setEditToken("");
   }
 
   const masterTotalPages = Math.max(
@@ -373,7 +488,6 @@ export default function ClusterPage() {
     return items;
   }, [role, masters.length, dirtyRole, dirtyMasters, dirtyPolicy]);
 
-  // if current tab not in list (role switch), reset
   useEffect(() => {
     if (!tabItems.some((t) => t.value === tab)) {
       setTab("role");
@@ -384,16 +498,11 @@ export default function ClusterPage() {
     <AdminShell>
       <PageHeader
         title="主从调度"
-        description="按角色显示设置 · 主节点 URL 表格 CRUD · 每卡可单独保存"
+        description="按角色显示设置 · 主节点 URL+密码 · 分卡保存"
         actions={
           <>
             {anyDirty ? <Badge variant="primary">有未保存</Badge> : null}
-            <Button
-              size="lg"
-              loading={busy}
-              onClick={() => void saveAll()}
-              className="!h-11 !min-w-[140px] !px-5 !text-base !font-semibold"
-            >
+            <Button size="sm" loading={busy} onClick={() => void saveAll()}>
               {anyDirty ? "保存全部" : "已全部保存"}
             </Button>
           </>
@@ -407,7 +516,7 @@ export default function ClusterPage() {
             {dirtyRole ? " · 角色" : ""}
             {dirtyMasters ? " · 主节点列表" : ""}
             {dirtyPolicy ? " · 策略" : ""}
-            。可点各卡片「保存此卡片」，或右上角「保存全部」。
+            。可用各卡片「保存」，或右上角「保存全部」。
           </Text>
         </div>
       ) : null}
@@ -467,7 +576,7 @@ export default function ClusterPage() {
                 placeholder="可选"
               />
               <Input
-                label="联邦密钥（主从一致，可选）"
+                label="全局联邦密钥（默认，主从一致）"
                 type="password"
                 value={publicToken}
                 onChange={(e) => setPublicToken(e.target.value)}
@@ -487,7 +596,7 @@ export default function ClusterPage() {
                 }
               />
               <Text size="xs" variant="secondary">
-                切换为「从节点」后会出现主节点 URL 表格；「主节点」显示调度策略与分享权限。
+                从节点可在「主节点」表为每个主单独设置密码；留空则用全局联邦密钥。
               </Text>
             </div>
             <CardSaveBar
@@ -502,43 +611,52 @@ export default function ClusterPage() {
       {tab === "masters" && role === "slave" ? (
         <LayerCard>
           <LayerCard.Secondary>
-            主节点 URL 列表{" "}
-            <Badge variant="secondary">{masters.length} 条</Badge>
+            主节点列表 <Badge variant="secondary">{masters.length} 条</Badge>
           </LayerCard.Secondary>
           <LayerCard.Primary>
-            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="min-w-0 flex-1">
-                <Input
-                  label="新增主节点 URL"
-                  value={newMaster}
-                  onChange={(e) => setNewMaster(e.target.value)}
-                  placeholder="https://master.example.com"
-                />
-              </div>
-              <Button size="lg" onClick={addMaster} className="!h-11 !px-5">
+            <div className="mb-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              <Input
+                label="主节点 URL"
+                value={newMasterURL}
+                onChange={(e) => setNewMasterURL(e.target.value)}
+                placeholder="https://master.example.com"
+              />
+              <Input
+                label="密码 / 联邦密钥（可选）"
+                type="password"
+                value={newMasterToken}
+                onChange={(e) => setNewMasterToken(e.target.value)}
+                placeholder="空=用全局密钥"
+              />
+              <Button size="sm" onClick={addMaster}>
                 添加
               </Button>
             </div>
 
             {masters.length === 0 ? (
-              <Text variant="secondary">暂无主节点 — 添加后可分页管理</Text>
+              <Text variant="secondary">暂无主节点 — 填写 URL 与可选密码后添加</Text>
             ) : (
               <div className="flex flex-col gap-2">
-                <div className="grid grid-cols-[1fr_auto] gap-2 border-b border-kumo-hairline pb-2">
+                <div className="grid grid-cols-[1.2fr_1fr_auto] gap-2 border-b border-kumo-hairline pb-2">
                   <Text size="xs" variant="secondary">
                     URL
+                  </Text>
+                  <Text size="xs" variant="secondary">
+                    密码
                   </Text>
                   <Text size="xs" variant="secondary">
                     操作
                   </Text>
                 </div>
-                {masterSlice.map((url, localIdx) => {
+                {masterSlice.map((row, localIdx) => {
                   const i = (masterPage - 1) * MASTER_PAGE_SIZE + localIdx;
-                  const link = links.find((l) => l.url.replace(/\/$/, "") === url);
+                  const link = links.find(
+                    (l) => l.url.replace(/\/$/, "") === row.url,
+                  );
                   return (
                     <div
-                      key={`${url}-${i}`}
-                      className="grid grid-cols-[1fr_auto] items-center gap-2 border-b border-kumo-hairline py-2 last:border-0"
+                      key={`${row.url}-${i}`}
+                      className="grid grid-cols-[1.2fr_1fr_auto] items-start gap-2 border-b border-kumo-hairline py-2 last:border-0"
                     >
                       <div className="min-w-0">
                         {editIdx === i ? (
@@ -549,7 +667,7 @@ export default function ClusterPage() {
                         ) : (
                           <>
                             <Text size="sm">
-                              <code className="break-all">{url}</code>{" "}
+                              <code className="break-all">{row.url}</code>{" "}
                               {link ? (
                                 <Badge variant={link.ok ? "primary" : "secondary"}>
                                   {link.ok ? "心跳 ok" : "down"}
@@ -562,13 +680,36 @@ export default function ClusterPage() {
                               <Text size="xs" variant="secondary">
                                 {link.master_name || ""} need {link.need} · assign{" "}
                                 {link.last_assign}
-                                {link.last_error ? ` · ${link.last_error}` : ""}
                               </Text>
                             ) : null}
                           </>
                         )}
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="min-w-0">
+                        {editIdx === i ? (
+                          <Input
+                            type="password"
+                            value={editToken}
+                            onChange={(e) => setEditToken(e.target.value)}
+                            placeholder={
+                              row.tokenSet || row.token
+                                ? "已设置 · 留空保持"
+                                : "空=全局密钥"
+                            }
+                          />
+                        ) : (
+                          <Text size="sm">
+                            {row.token ? (
+                              <Badge variant="primary">本次将更新</Badge>
+                            ) : row.tokenSet ? (
+                              <Badge variant="secondary">已设置</Badge>
+                            ) : (
+                              <Badge variant="secondary">用全局</Badge>
+                            )}
+                          </Text>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1">
                         {editIdx === i ? (
                           <>
                             <Button size="sm" onClick={commitEdit}>
@@ -580,6 +721,7 @@ export default function ClusterPage() {
                               onClick={() => {
                                 setEditIdx(null);
                                 setEditURL("");
+                                setEditToken("");
                               }}
                             >
                               取消
@@ -692,9 +834,6 @@ export default function ClusterPage() {
                       if (on) setSharePoolList(true);
                     }}
                   />
-                  <Text size="xs" variant="secondary">
-                    分享开关仅主节点生效：列表元数据 / 拉取 JSON 凭证。
-                  </Text>
                 </>
               ) : (
                 <>

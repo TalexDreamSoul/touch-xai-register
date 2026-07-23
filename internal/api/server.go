@@ -834,6 +834,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"cluster_public_token_set":     strings.TrimSpace(cfg.ClusterPublicToken) != "",
 		"cluster_master_url":           cfg.ClusterMasterURL,
 		"cluster_master_urls":          cfg.ClusterMasterURLs,
+		"cluster_master_endpoints":     maskMasterEndpoints(cfg),
 		"cluster_status_password_set":  strings.TrimSpace(cfg.ClusterStatusPassword) != "",
 		"cluster_heartbeat_sec":        cfg.ClusterHeartbeatSec,
 		"cluster_pool_target":          cfg.ClusterPoolTarget,
@@ -1225,4 +1226,16 @@ func pageCount(total, pageSize int) int {
 		return 0
 	}
 	return (total + pageSize - 1) / pageSize
+}
+
+
+func maskMasterEndpoints(cfg config.Config) []map[string]any {
+	eps := cfg.ClusterMasterEndpoints()
+	out := make([]map[string]any, 0, len(eps))
+	for _, e := range eps {
+		item := map[string]any{"url": e.URL, "token_set": strings.TrimSpace(e.Token) != ""}
+		// never return raw token to panel list; edit form re-enters password
+		out = append(out, item)
+	}
+	return out
 }

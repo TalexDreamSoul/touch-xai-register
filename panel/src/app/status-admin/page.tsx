@@ -107,7 +107,7 @@ function CardSaveBar({
   dirty,
   busy,
   onSave,
-  label = "保存此区块",
+  label = "保存",
 }: {
   dirty: boolean;
   busy: boolean;
@@ -123,13 +123,7 @@ function CardSaveBar({
           <Badge variant="secondary">已与服务器一致</Badge>
         )}
       </div>
-      <Button
-        size="lg"
-        loading={busy}
-        disabled={!dirty && !busy}
-        onClick={onSave}
-        className="!h-11 !min-w-[140px] !px-6 !text-base !font-semibold"
-      >
+      <Button size="sm" loading={busy} disabled={!dirty && !busy} onClick={onSave}>
         {label}
       </Button>
     </div>
@@ -289,12 +283,7 @@ export default function StatusAdminPage() {
             >
               立即探活
             </Button>
-            <Button
-              size="lg"
-              loading={busy}
-              onClick={() => void save()}
-              className="!h-11 !min-w-[128px] !px-5 !text-base !font-semibold"
-            >
+            <Button size="sm" loading={busy} onClick={() => void save()}>
               {dirty ? "保存更改" : "已保存"}
             </Button>
           </>
