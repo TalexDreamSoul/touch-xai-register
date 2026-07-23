@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Button, Input, LayerCard, Switch, Text } from "@cloudflare/kumo";
+import { Button, Input, LayerCard, Select, Switch, Text } from "@cloudflare/kumo";
 import { AdminShell } from "@/components/admin-shell";
 import { PageHeader } from "@/components/page-header";
 import { api, type PanelConfig } from "@/lib/api";
+import { useTheme, type ThemeMode } from "@/lib/theme";
 
 export default function SettingsPage() {
+  const { theme, setTheme, resolved } = useTheme();
   const [cfg, setCfg] = useState<PanelConfig>({});
   const [cpaKey, setCpaKey] = useState("");
   const [msg, setMsg] = useState("");
@@ -75,7 +77,7 @@ export default function SettingsPage() {
     <AdminShell>
       <PageHeader
         title="设置"
-        description="CPA · 代理 · 巡检 / 补号 / 清理"
+        description="外观 · CPA · 代理 · 巡检 / 补号 / 清理"
         actions={
           <>
             <Button
@@ -97,6 +99,30 @@ export default function SettingsPage() {
           <Text>{msg}</Text>
         </div>
       ) : null}
+
+      <LayerCard className="mb-4">
+        <LayerCard.Secondary>外观</LayerCard.Secondary>
+        <LayerCard.Primary>
+          <div className="flex flex-col gap-3 sm:max-w-md">
+            <Select
+              label="颜色主题"
+              value={theme}
+              onValueChange={(v) => {
+                if (!v) return;
+                setTheme(v as ThemeMode);
+              }}
+            >
+              <Select.Option value="system">跟随系统</Select.Option>
+              <Select.Option value="light">浅色</Select.Option>
+              <Select.Option value="dark">深色</Select.Option>
+            </Select>
+            <Text size="xs" variant="secondary">
+              当前生效：{resolved === "dark" ? "深色" : "浅色"}
+              {theme === "system" ? "（跟随系统）" : ""}
+            </Text>
+          </div>
+        </LayerCard.Primary>
+      </LayerCard>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <LayerCard>

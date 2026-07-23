@@ -7,12 +7,10 @@ import {
   DownloadSimpleIcon,
   GearIcon,
   HouseIcon,
-  MoonIcon,
   NetworkIcon,
   PlayCircleIcon,
   SignOutIcon,
   StackIcon,
-  SunIcon,
 } from "@phosphor-icons/react";
 import {
   Badge,
@@ -25,7 +23,6 @@ import {
 } from "@cloudflare/kumo";
 import type { ReactNode } from "react";
 import { useAuth } from "@/lib/auth";
-import { useTheme, type ThemeMode } from "@/lib/theme";
 
 type NavItem = {
   href: string;
@@ -75,7 +72,6 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { loading, authed, logout } = useAuth();
-  const { theme, setTheme, resolved } = useTheme();
 
   if (loading) {
     return (
@@ -96,12 +92,6 @@ export function AdminShell({ children }: { children: ReactNode }) {
       </Surface>
     );
   }
-
-  const cycleTheme = () => {
-    const order: ThemeMode[] = ["system", "light", "dark"];
-    const i = order.indexOf(theme);
-    setTheme(order[(i + 1) % order.length]);
-  };
 
   return (
     <Sidebar.Provider defaultOpen className="min-h-screen">
@@ -148,15 +138,6 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
         <Sidebar.Footer className="!h-auto !min-h-0 !w-full !flex-col !items-stretch !gap-2 !overflow-visible !px-2 !py-2">
           <div className="flex w-full items-center gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={cycleTheme}
-              aria-label="切换主题"
-            >
-              {resolved === "dark" ? <MoonIcon size={16} /> : <SunIcon size={16} />}
-              <span className="ml-1">{theme}</span>
-            </Button>
             <DropdownMenu>
               <DropdownMenu.Trigger aria-label="账号">
                 <Button variant="ghost" size="sm">
