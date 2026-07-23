@@ -6,20 +6,13 @@ import {
   Button,
   Input,
   LayerCard,
-  Select,
   Switch,
   Tabs,
   Text,
 } from "@cloudflare/kumo";
 import { AdminShell } from "@/components/admin-shell";
 import { PageHeader } from "@/components/page-header";
-import {
-  api,
-  getToken,
-  tokenQuery,
-  type ClusterStatus,
-  type RunStatus,
-} from "@/lib/api";
+import { api, tokenQuery, type RunStatus } from "@/lib/api";
 
 type RunInfo = {
   id: string;
@@ -28,31 +21,7 @@ type RunInfo = {
   mod_time?: string;
 };
 
-type LocalPoolItem = {
-  name: string;
-  email?: string;
-  source_run?: string;
-  size: number;
-  added_at: string;
-  synced_at?: string;
-  sync_error?: string;
-};
-
-type CloudPoolItem = {
-  name: string;
-  provider?: string;
-  type?: string;
-  status?: string;
-  status_message?: string;
-  email?: string;
-  disabled?: boolean;
-  size?: number;
-  success?: number;
-  failed?: number;
-};
-
-type TabKey = "logs" | "results" | "pool";
-type PoolSource = "local" | "cloud" | "federation";
+type TabKey = "logs" | "results";
 
 const PAGE_SIZE = 10;
 
@@ -118,20 +87,8 @@ export default function RegisterPage() {
   const [runsTotal, setRunsTotal] = useState(0);
   const [runsTotalPages, setRunsTotalPages] = useState(0);
   const [runsPage, setRunsPage] = useState(1);
-
-  const [poolSource, setPoolSource] = useState<PoolSource>("local");
-  const [masterURL, setMasterURL] = useState("");
-  const [masters, setMasters] = useState<string[]>([]);
-  const [localItems, setLocalItems] = useState<LocalPoolItem[]>([]);
-  const [cloudItems, setCloudItems] = useState<CloudPoolItem[]>([]);
   const [poolTotal, setPoolTotal] = useState(0);
-  const [poolTotalPages, setPoolTotalPages] = useState(0);
-  const [poolPage, setPoolPage] = useState(1);
   const [poolUnsynced, setPoolUnsynced] = useState(0);
-  const [fedCanPull, setFedCanPull] = useState(false);
-  const [fedShareList, setFedShareList] = useState(true);
-  const [poolError, setPoolError] = useState("");
-
   const [autoImport, setAutoImport] = useState(true);
   const [autoSync, setAutoSync] = useState(false);
   const [msg, setMsg] = useState("");
@@ -144,18 +101,20 @@ export default function RegisterPage() {
 
   const refreshCore = useCallback(async () => {
     try {
-      const [st, lg, cfg, cl] = await Promise.all([
+      const [st, lg, cfg, lp] = await Promise.all([
         api<{ status: RunStatus }>("/api/status"),
         api<{ log?: string }>("/api/logs?tail=300"),
         api<{ config?: Record<string, unknown> }>("/api/config").catch(() => ({
           config: {} as Record<string, unknown>,
         })),
-        api<{ cluster?: ClusterStatus }>("/api/cluster/status").catch(() => ({
-          cluster: undefined,
-        })),
+        api<{ total?: number; unsynced?: number }>(
+          "/api/pool/list?source=local&page=1&limit=1",
+        ).catch(() => ({ total: 0, unsynced: 0 })),
       ]);
       setStatus(st.status);
       setLog(lg.log || "");
+      setPoolTotal(lp.total || 0);
+      setPoolUnsynced(lp.unsynced || 0);
       const conf = cfg.config || {};
       if (typeof conf.local_pool_auto_import === "boolean") {
         setAutoImport(conf.local_pool_auto_import);
@@ -163,14 +122,6 @@ export default function RegisterPage() {
       if (typeof conf.local_pool_auto_sync === "boolean") {
         setAutoSync(conf.local_pool_auto_sync);
       }
-      const masterList =
-        cl.cluster?.masters?.filter(Boolean) ||
-        String(conf.cluster_master_urls || conf.cluster_master_url || "")
-          .split(/[\n,;\s]+/)
-          .map((s) => s.trim().replace(/\/$/, ""))
-          .filter(Boolean);
-      setMasters(masterList);
-      setMasterURL((prev) => prev || masterList[0] || "");
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "刷新失败");
     }
@@ -181,7 +132,6 @@ export default function RegisterPage() {
       const rs = await api<{
         runs?: RunInfo[];
         total?: number;
-        page?: number;
         total_pages?: number;
       }>(`/api/runs?page=${page}&limit=${PAGE_SIZE}`);
       setRuns(rs.runs || []);
@@ -191,81 +141,6 @@ export default function RegisterPage() {
       setMsg(e instanceof Error ? e.message : "加载注册结果失败");
     }
   }, []);
-
-  const refreshPool = useCallback(
-    async (page: number, source: PoolSource, master: string) => {
-      setPoolError("");
-      try {
-        if (source === "local") {
-          const lp = await api<{
-            items?: LocalPoolItem[];
-            total?: number;
-            unsynced?: number;
-            total_pages?: number;
-          }>(`/api/pool/list?source=local&page=${page}&limit=${PAGE_SIZE}`);
-          setLocalItems(lp.items || []);
-          setCloudItems([]);
-          setPoolTotal(lp.total || 0);
-          setPoolUnsynced(lp.unsynced || 0);
-          setPoolTotalPages(lp.total_pages || 0);
-          setFedCanPull(false);
-          setFedShareList(true);
-          return;
-        }
-        if (source === "cloud") {
-          const cp = await api<{
-            files?: CloudPoolItem[];
-            total?: number;
-            total_pages?: number;
-            can_pull?: boolean;
-            error?: string;
-          }>(`/api/pool/list?source=cloud&page=${page}&limit=${PAGE_SIZE}`);
-          setCloudItems(cp.files || []);
-          setLocalItems([]);
-          setPoolTotal(cp.total || 0);
-          setPoolTotalPages(cp.total_pages || 0);
-          setPoolUnsynced(0);
-          setFedCanPull(cp.can_pull !== false);
-          setFedShareList(true);
-          return;
-        }
-        // federation
-        if (!master) {
-          setLocalItems([]);
-          setCloudItems([]);
-          setPoolTotal(0);
-          setPoolTotalPages(0);
-          setPoolError("请选择联邦主节点");
-          return;
-        }
-        const fp = await api<{
-          files?: CloudPoolItem[];
-          total?: number;
-          total_pages?: number;
-          share_pool_list?: boolean;
-          share_pool_pull?: boolean;
-          error?: string;
-          master_name?: string;
-        }>(
-          `/api/pool/list?source=federation&master=${encodeURIComponent(master)}&page=${page}&limit=${PAGE_SIZE}`,
-        );
-        setCloudItems(fp.files || []);
-        setLocalItems([]);
-        setPoolTotal(fp.total || 0);
-        setPoolTotalPages(fp.total_pages || 0);
-        setPoolUnsynced(0);
-        setFedShareList(fp.share_pool_list !== false);
-        setFedCanPull(!!fp.share_pool_pull);
-      } catch (e) {
-        setLocalItems([]);
-        setCloudItems([]);
-        setPoolTotal(0);
-        setPoolTotalPages(0);
-        setPoolError(e instanceof Error ? e.message : "加载号池失败");
-      }
-    },
-    [],
-  );
 
   useEffect(() => {
     void refreshCore();
@@ -279,20 +154,10 @@ export default function RegisterPage() {
   }, [tab, runsPage, refreshRuns]);
 
   useEffect(() => {
-    if (tab !== "pool") return;
-    void refreshPool(poolPage, poolSource, masterURL);
-  }, [tab, poolPage, poolSource, masterURL, refreshPool]);
-
-  useEffect(() => {
-    if (!running) return;
-    const t = setInterval(() => {
-      if (tab === "results") void refreshRuns(runsPage);
-      if (tab === "pool" && poolSource === "local") {
-        void refreshPool(poolPage, "local", masterURL);
-      }
-    }, 5000);
+    if (!running || tab !== "results") return;
+    const t = setInterval(() => void refreshRuns(runsPage), 5000);
     return () => clearInterval(t);
-  }, [running, tab, runsPage, poolPage, poolSource, masterURL, refreshRuns, refreshPool]);
+  }, [running, tab, runsPage, refreshRuns]);
 
   async function start() {
     setBusy(true);
@@ -324,9 +189,7 @@ export default function RegisterPage() {
         /* optional */
       }
       await refreshCore();
-      setPoolPage(1);
       if (tab === "results") await refreshRuns(runsPage);
-      if (tab === "pool") await refreshPool(1, poolSource, masterURL);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "停止失败");
     } finally {
@@ -360,11 +223,10 @@ export default function RegisterPage() {
           body: JSON.stringify(runId ? { run_id: runId } : {}),
         },
       );
-      setMsg(`已入库 ${d.added ?? 0} 个（run ${d.run_id || "latest"}）`);
-      setPoolSource("local");
-      setPoolPage(1);
-      setTab("pool");
-      await refreshPool(1, "local", masterURL);
+      setMsg(
+        `已入库 ${d.added ?? 0} 个（run ${d.run_id || "latest"}）· 去左侧「号池」查看`,
+      );
+      await refreshCore();
       await refreshRuns(runsPage);
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "入库失败");
@@ -373,45 +235,12 @@ export default function RegisterPage() {
     }
   }
 
-  async function syncPool() {
-    setBusy(true);
-    try {
-      const d = await api<{ synced?: number; failed?: number; total?: number }>(
-        "/api/local-pool/sync",
-        { method: "POST", body: JSON.stringify({ all: false }) },
-      );
-      setMsg(
-        `同步完成：成功 ${d.synced ?? 0} / 失败 ${d.failed ?? 0}（共 ${d.total ?? 0}）`,
-      );
-      await refreshPool(poolPage, "local", masterURL);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "同步失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function pullCredential(name: string) {
-    const tok = getToken();
-    const params = new URLSearchParams();
-    if (poolSource === "federation") {
-      params.set("source", "federation");
-      params.set("master", masterURL);
-    } else {
-      params.set("source", "cloud");
-    }
-    params.set("name", name);
-    if (tok) params.set("token", tok);
-    window.open(`/api/pool/pull?${params.toString()}`, "_blank");
-  }
-
   const tabItems = useMemo(
     () => [
       { value: "logs", label: "日志" },
       { value: "results", label: `结果${runsTotal ? ` (${runsTotal})` : ""}` },
-      { value: "pool", label: `号池${poolTotal ? ` (${poolTotal})` : ""}` },
     ],
-    [runsTotal, poolTotal],
+    [runsTotal],
   );
 
   return (
@@ -425,7 +254,7 @@ export default function RegisterPage() {
       >
         <PageHeader
           title="注册"
-          description="启动流水线 · 日志 / 结果 / 号池"
+          description="启动流水线 · 日志 / 结果 · 号池见左侧导航"
           actions={
             running ? (
               <Badge variant="primary">运行中</Badge>
@@ -491,16 +320,16 @@ export default function RegisterPage() {
                 </div>
                 <div className="rounded-lg bg-kumo-contrast/5 px-3 py-2">
                   <Text size="xs" variant="secondary">
-                    号池筛选
+                    本地号池
                   </Text>
                   <Text>
-                    {poolSource === "local"
-                      ? `本地 ${poolTotal}`
-                      : poolSource === "cloud"
-                        ? `云端 ${poolTotal}`
-                        : `联邦 ${poolTotal}`}
+                    {poolTotal} 个 · 未同步 {poolUnsynced}
                   </Text>
                   <Text size="xs" variant="secondary">
+                    <a className="underline" href="/pool/">
+                      打开号池
+                    </a>
+                    {" · "}
                     run {status?.run_id || "—"}
                   </Text>
                 </div>
@@ -533,7 +362,10 @@ export default function RegisterPage() {
             variant="segmented"
             tabs={tabItems}
             value={tab}
-            onValueChange={(v) => setTab(v as TabKey)}
+            onValueChange={(v) => {
+              if (!v) return;
+              setTab(v as TabKey);
+            }}
           />
         </div>
 
@@ -562,9 +394,7 @@ export default function RegisterPage() {
               </pre>
             </LayerCard.Primary>
           </LayerCard>
-        ) : null}
-
-        {tab === "results" ? (
+        ) : (
           <LayerCard>
             <LayerCard.Secondary>
               注册结果{" "}
@@ -576,6 +406,9 @@ export default function RegisterPage() {
               >
                 入库最新结果
               </Button>
+              <a className="ml-2 text-sm underline" href="/pool/">
+                查看号池
+              </a>
             </LayerCard.Secondary>
             <LayerCard.Primary>
               {runs.length === 0 ? (
@@ -638,186 +471,7 @@ export default function RegisterPage() {
               />
             </LayerCard.Primary>
           </LayerCard>
-        ) : null}
-
-        {tab === "pool" ? (
-          <LayerCard>
-            <LayerCard.Secondary>
-              号池{" "}
-              {poolSource === "local" ? (
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  loading={busy}
-                  onClick={() => void syncPool()}
-                >
-                  同步未上传到云端
-                </Button>
-              ) : null}
-            </LayerCard.Secondary>
-            <LayerCard.Primary>
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
-                <div className="min-w-[180px]">
-                  <Select
-                    label="来源"
-                    value={poolSource}
-                    onValueChange={(v) => {
-                      if (!v) return;
-                      setPoolSource(v as PoolSource);
-                      setPoolPage(1);
-                    }}
-                  >
-                    <Select.Option value="local">本地号池</Select.Option>
-                    <Select.Option value="cloud">云端 CPA</Select.Option>
-                    <Select.Option value="federation">联邦主节点</Select.Option>
-                  </Select>
-                </div>
-                {poolSource === "federation" ? (
-                  <div className="min-w-[260px] flex-1">
-                    {masters.length > 0 ? (
-                      <Select
-                        label="联邦主节点"
-                        value={masterURL}
-                        onValueChange={(v) => {
-                          if (!v) return;
-                          setMasterURL(v);
-                          setPoolPage(1);
-                        }}
-                      >
-                        {masters.map((m) => (
-                          <Select.Option key={m} value={m}>
-                            {m}
-                          </Select.Option>
-                        ))}
-                      </Select>
-                    ) : (
-                      <Input
-                        label="联邦主节点 URL"
-                        value={masterURL}
-                        onChange={(e) => setMasterURL(e.target.value.trim())}
-                        placeholder="https://master.example.com"
-                      />
-                    )}
-                  </div>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => void refreshPool(poolPage, poolSource, masterURL)}
-                >
-                  刷新
-                </Button>
-              </div>
-
-              {poolSource === "federation" ? (
-                <div className="mb-3 flex flex-wrap gap-2">
-                  <Badge variant={fedShareList ? "primary" : "secondary"}>
-                    {fedShareList ? "允许看列表" : "禁止看列表"}
-                  </Badge>
-                  <Badge variant={fedCanPull ? "primary" : "secondary"}>
-                    {fedCanPull ? "允许拉取凭证" : "禁止拉取凭证"}
-                  </Badge>
-                  <Text size="xs" variant="secondary">
-                    权限由主节点联邦配置控制
-                  </Text>
-                </div>
-              ) : null}
-
-              {poolError ? (
-                <Text variant="secondary">{poolError}</Text>
-              ) : poolSource === "local" ? (
-                localItems.length === 0 ? (
-                  <Text variant="secondary">
-                    本地号池为空 — 从「结果」入库，或开启自动入库
-                  </Text>
-                ) : (
-                  <div className="flex flex-col gap-3">
-                    {localItems.map((p) => (
-                      <div
-                        key={p.name}
-                        className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2 last:border-0"
-                      >
-                        <div className="min-w-0">
-                          <Text size="sm">
-                            {p.email || p.name}{" "}
-                            {p.synced_at ? (
-                              <Badge variant="primary">已同步云端</Badge>
-                            ) : (
-                              <Badge variant="secondary">未同步</Badge>
-                            )}
-                          </Text>
-                          <Text size="xs" variant="secondary">
-                            {p.name}
-                            {p.source_run ? ` · run ${p.source_run}` : ""}
-                            {p.sync_error ? ` · ${p.sync_error}` : ""}
-                          </Text>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              ) : cloudItems.length === 0 ? (
-                <Text variant="secondary">
-                  {poolSource === "cloud"
-                    ? "云端 CPA 暂无条目（检查 CPA_MANAGEMENT 配置）"
-                    : "联邦主节点无列表或未授权"}
-                </Text>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {cloudItems.map((p) => (
-                    <div
-                      key={p.name}
-                      className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2 last:border-0"
-                    >
-                      <div className="min-w-0">
-                        <Text size="sm">
-                          {p.email || p.name}{" "}
-                          {p.disabled ? (
-                            <Badge variant="secondary">disabled</Badge>
-                          ) : (
-                            <Badge variant="primary">{p.status || "active"}</Badge>
-                          )}
-                        </Text>
-                        <Text size="xs" variant="secondary">
-                          {p.name}
-                          {p.provider ? ` · ${p.provider}` : ""}
-                          {p.status_message ? ` · ${p.status_message}` : ""}
-                        </Text>
-                      </div>
-                      {(poolSource === "cloud" || fedCanPull) && p.name ? (
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => pullCredential(p.name)}
-                        >
-                          下载凭证
-                        </Button>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {poolSource === "local" && poolUnsynced > 0 ? (
-                <div className="mt-2"><Text size="xs" variant="secondary">未同步到云端：{poolUnsynced}</Text></div>
-              ) : null}
-
-              <Pager
-                page={poolPage}
-                totalPages={poolTotalPages}
-                total={poolTotal}
-                label={
-                  poolSource === "local"
-                    ? "本地号池"
-                    : poolSource === "cloud"
-                      ? "云端 CPA"
-                      : "联邦号池"
-                }
-                onChange={setPoolPage}
-              />
-            </LayerCard.Primary>
-          </LayerCard>
-        ) : null}
+        )}
       </div>
     </AdminShell>
   );
