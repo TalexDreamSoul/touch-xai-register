@@ -32,8 +32,11 @@ type Layout struct {
 	ShowSlaves  bool   `json:"show_slaves"`
 	ShowJSONLink bool  `json:"show_json_link"`
 	Footer      string `json:"footer"`
-	// Models to monitor (empty → defaults)
+	// Models flat list (derived from ModelGroups when groups are set; kept for probe + legacy)
 	Models []string `json:"models"`
+	// ModelGroups organizes models on the public board (e.g. Grok / GPT series).
+	// When non-empty, Models is rebuilt as the flattened unique list for probing.
+	ModelGroups []ModelGroup `json:"model_groups"`
 	// Probe settings
 	ProbeEnabled     bool   `json:"probe_enabled"`
 	ProbeIntervalSec int    `json:"probe_interval_sec"`
@@ -41,7 +44,25 @@ type Layout struct {
 	APIBase          string `json:"api_base"` // OpenAI-compatible base, e.g. http://127.0.0.1:8317/v1
 }
 
+// ModelGroup is a named series on the public status board.
+type ModelGroup struct {
+	ID     string   `json:"id"`
+	Name   string   `json:"name"`
+	Models []string `json:"models"`
+}
+
+// ModelGroupStatus is a group with live probe rows for the board.
+type ModelGroupStatus struct {
+	ID     string        `json:"id"`
+	Name   string        `json:"name"`
+	Models []ModelStatus `json:"models"`
+}
+
 func DefaultLayout() Layout {
+	groups := []ModelGroup{
+		{ID: "grok", Name: "Grok", Models: []string{"grok-4.5", "grok-4", "grok-3"}},
+		{ID: "gpt", Name: "GPT", Models: []string{}},
+	}
 	return Layout{
 		Title:            "节点状态",
 		Subtitle:         "号池 · 模型可用性 · 联邦",
@@ -52,7 +73,8 @@ func DefaultLayout() Layout {
 		ShowSlaves:       true,
 		ShowJSONLink:     true,
 		Footer:           "JSON: /api/public/status.json",
-		Models:           []string{"grok-4.5", "grok-4", "grok-3"},
+		Models:           flattenModelGroups(groups),
+		ModelGroups:      groups,
 		ProbeEnabled:     true,
 		ProbeIntervalSec: 30,
 		ProbeMaxTokens:   20,
@@ -96,6 +118,7 @@ type PublicBoard struct {
 	Node         map[string]any         `json:"node"`
 	Pool         PoolStats              `json:"pool"`
 	Models       []ModelStatus          `json:"models"`
+	ModelGroups  []ModelGroupStatus     `json:"model_groups"`
 	ModelAvailable map[string]bool      `json:"model_available"`
 	Cluster      map[string]any         `json:"cluster,omitempty"`
 	Extra        map[string]any         `json:"extra,omitempty"`
@@ -154,9 +177,7 @@ func (s *Service) SaveLayout(l Layout) error {
 	if l.ProbeMaxTokens <= 0 {
 		l.ProbeMaxTokens = 20
 	}
-	if len(l.Models) == 0 {
-		l.Models = DefaultLayout().Models
-	}
+	l = normalizeModelGroups(l)
 	if err := saveLayout(s.layoutPath, l); err != nil {
 		return err
 	}
@@ -177,6 +198,7 @@ func (s *Service) Board(password string) (PublicBoard, int, string) {
 	layout := s.Layout()
 	pool := s.collectPool(cfg)
 	models := s.modelList(layout)
+	groups := s.modelGroupList(layout)
 	avail := map[string]bool{}
 	for _, m := range models {
 		avail[m.ID] = m.Available
@@ -197,6 +219,7 @@ func (s *Service) Board(password string) (PublicBoard, int, string) {
 		},
 		Pool:           pool,
 		Models:         models,
+		ModelGroups:    groups,
 		ModelAvailable: avail,
 	}
 	if layout.ShowCluster && s.clusterFn != nil {
@@ -255,13 +278,53 @@ func (s *Service) collectPool(cfg config.Config) PoolStats {
 func (s *Service) modelList(layout Layout) []ModelStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]ModelStatus, 0, len(layout.Models))
-	for _, id := range layout.Models {
+	ids := layout.Models
+	if len(ids) == 0 {
+		ids = flattenModelGroups(layout.ModelGroups)
+	}
+	out := make([]ModelStatus, 0, len(ids))
+	for _, id := range ids {
 		if m, ok := s.models[id]; ok {
 			out = append(out, m)
 			continue
 		}
 		out = append(out, ModelStatus{ID: id, Available: false})
+	}
+	return out
+}
+
+func (s *Service) modelGroupList(layout Layout) []ModelGroupStatus {
+	groups := layout.ModelGroups
+	if len(groups) == 0 {
+		// legacy flat list → one group
+		if len(layout.Models) == 0 {
+			return nil
+		}
+		groups = []ModelGroup{{ID: "default", Name: "模型", Models: layout.Models}}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ModelGroupStatus, 0, len(groups))
+	for _, g := range groups {
+		row := ModelGroupStatus{
+			ID:   g.ID,
+			Name: firstNonEmpty(g.Name, g.ID),
+		}
+		for _, id := range g.Models {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if m, ok := s.models[id]; ok {
+				row.Models = append(row.Models, m)
+			} else {
+				row.Models = append(row.Models, ModelStatus{ID: id, Available: false})
+			}
+		}
+		if row.Models == nil {
+			row.Models = []ModelStatus{}
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -300,12 +363,16 @@ func (s *Service) ProbeNow() { s.probeOnce() }
 
 func (s *Service) probeOnce() {
 	layout := s.Layout()
-	if !layout.ProbeEnabled || len(layout.Models) == 0 {
+	ids := layout.Models
+	if len(ids) == 0 {
+		ids = flattenModelGroups(layout.ModelGroups)
+	}
+	if !layout.ProbeEnabled || len(ids) == 0 {
 		return
 	}
 	cfg := s.cfgFn()
 	// pick random model each tick
-	model := layout.Models[randIntn(len(layout.Models))]
+	model := ids[randIntn(len(ids))]
 	maxTok := layout.ProbeMaxTokens
 	if maxTok <= 0 {
 		maxTok = 20
@@ -427,9 +494,7 @@ func loadLayout(path string) Layout {
 	if l.ProbeMaxTokens <= 0 {
 		l.ProbeMaxTokens = def.ProbeMaxTokens
 	}
-	if len(l.Models) == 0 {
-		l.Models = def.Models
-	}
+	l = normalizeModelGroups(l)
 	// if file existed but all show flags false and empty models — keep as-is (user choice)
 	// first boot defaults already applied when file missing
 	if !l.ShowPool && !l.ShowModels && !l.ShowCluster && !l.ShowNeed && !l.ShowSlaves {
@@ -437,6 +502,104 @@ func loadLayout(path string) Layout {
 		l.ShowPool, l.ShowModels, l.ShowCluster, l.ShowNeed, l.ShowSlaves, l.ShowJSONLink = true, true, true, true, true, true
 	}
 	return l
+}
+
+func normalizeModelGroups(l Layout) Layout {
+	def := DefaultLayout()
+	// sanitize groups
+	var groups []ModelGroup
+	for i, g := range l.ModelGroups {
+		name := strings.TrimSpace(g.Name)
+		id := strings.TrimSpace(g.ID)
+		if id == "" {
+			id = slugID(name, i)
+		}
+		if name == "" {
+			name = id
+		}
+		var models []string
+		seen := map[string]struct{}{}
+		for _, m := range g.Models {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			models = append(models, m)
+		}
+		if models == nil {
+			models = []string{}
+		}
+		groups = append(groups, ModelGroup{ID: id, Name: name, Models: models})
+	}
+	if len(groups) == 0 {
+		// legacy: only flat models
+		if len(l.Models) > 0 {
+			groups = []ModelGroup{{ID: "default", Name: "模型", Models: append([]string(nil), l.Models...)}}
+		} else {
+			groups = append([]ModelGroup(nil), def.ModelGroups...)
+		}
+	}
+	l.ModelGroups = groups
+	flat := flattenModelGroups(groups)
+	if len(flat) == 0 {
+		// keep empty groups for board structure, but probe needs at least defaults if user cleared all
+		// do not force-fill models so empty GPT group is allowed
+		l.Models = []string{}
+	} else {
+		l.Models = flat
+	}
+	return l
+}
+
+func flattenModelGroups(groups []ModelGroup) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, g := range groups {
+		for _, m := range g.Models {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func slugID(name string, i int) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	n = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r == ' ' || r == '-' || r == '_':
+			return '-'
+		default:
+			return -1
+		}
+	}, n)
+	n = strings.Trim(n, "-")
+	if n == "" {
+		return fmt.Sprintf("group-%d", i+1)
+	}
+	return n
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func saveLayout(path string, l Layout) error {

@@ -21,6 +21,7 @@ type Layout = {
   show_json_link?: boolean;
   footer?: string;
   models?: string[];
+  model_groups?: Array<{ id?: string; name?: string; models?: string[] }>;
   probe_enabled?: boolean;
   probe_interval_sec?: number;
   probe_max_tokens?: number;
@@ -33,6 +34,12 @@ type ModelStatus = {
   last_check?: string;
   last_error?: string;
   http_code?: number;
+};
+
+type ModelGroupStatus = {
+  id: string;
+  name: string;
+  models: ModelStatus[];
 };
 
 type Board = {
@@ -56,6 +63,7 @@ type Board = {
     need?: number;
   };
   models?: ModelStatus[];
+  model_groups?: ModelGroupStatus[];
   model_available?: Record<string, boolean>;
   cluster?: {
     role?: string;
@@ -234,7 +242,47 @@ export default function PublicStatusPage() {
                   )}
                 </LayerCard.Secondary>
                 <LayerCard.Primary>
-                  {(data.models || []).length === 0 ? (
+                  {(data.model_groups || []).length > 0 ? (
+                    <div className="flex flex-col gap-5">
+                      {data.model_groups?.map((g) => (
+                        <div key={g.id || g.name}>
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <Text size="sm">{g.name || g.id}</Text>
+                            <Badge variant="secondary">
+                              {(g.models || []).filter((m) => m.available).length}/
+                              {(g.models || []).length} available
+                            </Badge>
+                          </div>
+                          {(g.models || []).length === 0 ? (
+                            <Text size="xs" variant="secondary">
+                              此组别暂无模型
+                            </Text>
+                          ) : (
+                            <div className="flex flex-col gap-3">
+                              {g.models.map((m) => (
+                                <div
+                                  key={m.id}
+                                  className="flex flex-wrap items-center justify-between gap-2 border-b border-kumo-hairline pb-2 last:border-0"
+                                >
+                                  <Text size="sm">
+                                    <code>{m.id}</code>{" "}
+                                    <Badge variant={m.available ? "primary" : "secondary"}>
+                                      {m.available ? "available" : "down"}
+                                    </Badge>
+                                  </Text>
+                                  <Text size="xs" variant="secondary">
+                                    {m.latency_ms != null ? `${m.latency_ms}ms` : "—"}
+                                    {m.http_code ? ` · http ${m.http_code}` : ""}
+                                    {m.last_error ? ` · ${m.last_error}` : ""}
+                                  </Text>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (data.models || []).length === 0 ? (
                     <Text variant="secondary">暂无模型数据（等待探活）</Text>
                   ) : (
                     <div className="flex flex-col gap-3">

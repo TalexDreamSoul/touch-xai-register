@@ -6,6 +6,18 @@ import { AdminShell } from "@/components/admin-shell";
 import { PageHeader } from "@/components/page-header";
 import { api } from "@/lib/api";
 
+type ModelGroup = {
+  id: string;
+  name: string;
+  models: string[];
+};
+
+type GroupDraft = {
+  id: string;
+  name: string;
+  modelsText: string;
+};
+
 type Layout = {
   title: string;
   subtitle: string;
@@ -17,11 +29,17 @@ type Layout = {
   show_json_link: boolean;
   footer: string;
   models: string[];
+  model_groups: ModelGroup[];
   probe_enabled: boolean;
   probe_interval_sec: number;
   probe_max_tokens: number;
   api_base: string;
 };
+
+const defaultDrafts: GroupDraft[] = [
+  { id: "grok", name: "Grok", modelsText: "grok-4.5\ngrok-4\ngrok-3" },
+  { id: "gpt", name: "GPT", modelsText: "" },
+];
 
 const empty: Layout = {
   title: "节点状态",
@@ -34,15 +52,35 @@ const empty: Layout = {
   show_json_link: true,
   footer: "JSON: /api/public/status.json",
   models: ["grok-4.5", "grok-4", "grok-3"],
+  model_groups: [
+    { id: "grok", name: "Grok", models: ["grok-4.5", "grok-4", "grok-3"] },
+    { id: "gpt", name: "GPT", models: [] },
+  ],
   probe_enabled: true,
   probe_interval_sec: 30,
   probe_max_tokens: 20,
   api_base: "",
 };
 
+function slugify(name: string, i: number): string {
+  const s = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return s || `group-${i + 1}`;
+}
+
+function parseModels(text: string): string[] {
+  return text
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export default function StatusAdminPage() {
   const [layout, setLayout] = useState<Layout>(empty);
-  const [modelsText, setModelsText] = useState(empty.models.join("\n"));
+  const [drafts, setDrafts] = useState<GroupDraft[]>(defaultDrafts);
   const [statusPassword, setStatusPassword] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,11 +92,25 @@ export default function StatusAdminPage() {
       api<{ config: Record<string, unknown> }>("/api/config"),
     ]);
     const next: Layout = { ...empty, ...(l.layout || {}) };
-    if (!Array.isArray(next.models) || next.models.length === 0) {
-      next.models = empty.models;
+    let groups = Array.isArray(next.model_groups) ? next.model_groups : [];
+    if (groups.length === 0) {
+      if (Array.isArray(next.models) && next.models.length > 0) {
+        groups = [{ id: "default", name: "模型", models: next.models }];
+      } else {
+        groups = empty.model_groups.map((g) => ({
+          ...g,
+          models: [...g.models],
+        }));
+      }
     }
+    const nextDrafts: GroupDraft[] = groups.map((g, i) => ({
+      id: g.id || slugify(g.name || "", i),
+      name: g.name || g.id || `组别 ${i + 1}`,
+      modelsText: (g.models || []).join("\n"),
+    }));
+    next.model_groups = groups;
     setLayout(next);
-    setModelsText(next.models.join("\n"));
+    setDrafts(nextDrafts);
     setPwSet(!!cfg.config.cluster_status_password_set);
   }
 
@@ -72,13 +124,18 @@ export default function StatusAdminPage() {
     setBusy(true);
     setMsg("");
     try {
-      const models = modelsText
-        .split(/[\n,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const bodyGroups: ModelGroup[] = drafts.map((d, i) => {
+        const name = d.name.trim() || `组别 ${i + 1}`;
+        return {
+          id: d.id.trim() || slugify(name, i),
+          name,
+          models: parseModels(d.modelsText),
+        };
+      });
       const body: Layout = {
         ...layout,
-        models: models.length ? models : empty.models,
+        model_groups: bodyGroups,
+        models: bodyGroups.flatMap((g) => g.models),
         probe_interval_sec: Number(layout.probe_interval_sec) || 30,
         probe_max_tokens: Number(layout.probe_max_tokens) || 20,
       };
@@ -93,7 +150,7 @@ export default function StatusAdminPage() {
         });
         setStatusPassword("");
       }
-      setMsg("已保存看板配置");
+      setMsg("已保存看板配置（含模型组别）");
       await load();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "保存失败");
@@ -118,11 +175,32 @@ export default function StatusAdminPage() {
     setLayout((prev) => ({ ...prev, [key]: value }));
   }
 
+  function updateDraft(i: number, patch: Partial<GroupDraft>) {
+    setDrafts((prev) =>
+      prev.map((d, idx) => (idx === i ? { ...d, ...patch } : d)),
+    );
+  }
+
+  function addGroup() {
+    setDrafts((prev) => [
+      ...prev,
+      {
+        id: `group-${prev.length + 1}`,
+        name: "新组别",
+        modelsText: "",
+      },
+    ]);
+  }
+
+  function removeGroup(i: number) {
+    setDrafts((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
   return (
     <AdminShell>
       <PageHeader
         title="状态页配置"
-        description="独立分组 · 自定义公开看板 · 模型监测（约 30s / max_tokens=20 / 随机）"
+        description="主节点看板 · 模型组别（Grok / GPT…）· 探活"
         actions={
           <>
             <Button size="sm" variant="secondary" loading={busy} onClick={() => void probeNow()}>
@@ -190,7 +268,7 @@ export default function StatusAdminPage() {
                 onCheckedChange={(v) => setFlag("show_need", !!v)}
               />
               <Switch
-                label="模型可用性"
+                label="模型可用性（按组别）"
                 checked={layout.show_models}
                 onCheckedChange={(v) => setFlag("show_models", !!v)}
               />
@@ -213,8 +291,70 @@ export default function StatusAdminPage() {
           </LayerCard.Primary>
         </LayerCard>
 
+        <LayerCard className="lg:col-span-2">
+          <LayerCard.Secondary>
+            模型组别{" "}
+            <Button size="sm" variant="secondary" onClick={addGroup}>
+              添加组别
+            </Button>
+          </LayerCard.Secondary>
+          <LayerCard.Primary>
+            <div className="flex flex-col gap-4">
+              <Text size="xs" variant="secondary">
+                主节点可配置多个系列（如 Grok、GPT）。公开看板按组别分区展示；探活对所有组别模型合并随机探测。
+              </Text>
+              {drafts.length === 0 ? (
+                <Text variant="secondary">暂无组别，点「添加组别」</Text>
+              ) : (
+                drafts.map((g, i) => (
+                  <div
+                    key={`${g.id}-${i}`}
+                    className="rounded-lg border border-kumo-hairline p-3"
+                  >
+                    <div className="mb-3 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+                      <Input
+                        label="组别名称"
+                        value={g.name}
+                        onChange={(e) => updateDraft(i, { name: e.target.value })}
+                        placeholder="Grok / GPT / Claude…"
+                      />
+                      <Input
+                        label="组别 ID（可选）"
+                        value={g.id}
+                        onChange={(e) => updateDraft(i, { id: e.target.value })}
+                        placeholder="grok"
+                      />
+                      <div className="flex items-end">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => removeGroup(i)}
+                        >
+                          删除
+                        </Button>
+                      </div>
+                    </div>
+                    <Input
+                      label="模型列表（每行一个）"
+                      value={g.modelsText}
+                      onChange={(e) =>
+                        updateDraft(i, { modelsText: e.target.value })
+                      }
+                      placeholder={
+                        g.name.toLowerCase().includes("gpt")
+                          ? "gpt-4o\ngpt-4.1"
+                          : "grok-4.5\ngrok-4"
+                      }
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+          </LayerCard.Primary>
+        </LayerCard>
+
         <LayerCard>
-          <LayerCard.Secondary>模型监测</LayerCard.Secondary>
+          <LayerCard.Secondary>探活参数</LayerCard.Secondary>
           <LayerCard.Primary>
             <div className="flex flex-col gap-3">
               <Switch
@@ -242,12 +382,6 @@ export default function StatusAdminPage() {
                 onChange={(e) => setFlag("api_base", e.target.value)}
                 placeholder="http://127.0.0.1:8317/v1"
               />
-              <Input
-                label="模型列表（每行一个，每次随机抽一个探）"
-                value={modelsText}
-                onChange={(e) => setModelsText(e.target.value)}
-                placeholder={"grok-4.5\ngrok-4\ngrok-3"}
-              />
             </div>
           </LayerCard.Primary>
         </LayerCard>
@@ -257,18 +391,13 @@ export default function StatusAdminPage() {
           <LayerCard.Primary>
             <div className="flex flex-col gap-2">
               <Text size="sm" variant="secondary">
-                · 状态页独立于「联邦」导航；看板配置在此页完成。
+                · 组别只影响看板分区；探活仍对全部模型随机轮询。
               </Text>
               <Text size="sm" variant="secondary">
-                · 正式池来自 CPA Management auth-files；候选池统计本机 outputs/*/CPA
-                本地 JSON。
+                · 空组别（如预留 GPT）可保留名称，等有模型再填。
               </Text>
               <Text size="sm" variant="secondary">
-                · 探活：约每 30s 随机选一个模型，POST /chat/completions，max_tokens=20，
-                随机 prompt 防缓存。
-              </Text>
-              <Text size="sm" variant="secondary">
-                · JSON 暴露 model_available 与 models[] 明细，便于外部监控。
+                · JSON 同时返回 models[] 与 model_groups[]，便于外部监控。
               </Text>
             </div>
           </LayerCard.Primary>
