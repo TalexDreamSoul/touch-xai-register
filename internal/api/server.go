@@ -736,6 +736,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"email_mode":                   string(cfg.EmailMode),
 		"email_domain":                 cfg.EmailDomain,
 		"email_api":                    cfg.EmailAPI,
+		"freemail_base":                cfg.FreeMailBase,
+		"freemail_api_key_set":         strings.TrimSpace(cfg.FreeMailAPIKey) != "",
+		"freemail_api_key_masked":      transfer.MaskKey(cfg.FreeMailAPIKey),
 		"clearance_enabled":            cfg.ClearanceEnabled,
 		"register_proxy":               cfg.RegisterProxy,
 		"flaresolverr_url":             cfg.FlareSolverrURL,
@@ -794,6 +797,8 @@ type configUpdate struct {
 	EmailMode         *string `json:"email_mode"`
 	EmailDomain       *string `json:"email_domain"`
 	EmailAPI          *string `json:"email_api"`
+	FreeMailBase      *string `json:"freemail_base"`
+	FreeMailAPIKey    *string `json:"freemail_api_key"`
 	ClearanceEnabled  *bool   `json:"clearance_enabled"`
 	RegisterProxy     *string `json:"register_proxy"`
 	FlareSolverrURL   *string `json:"flaresolverr_url"`
@@ -863,6 +868,13 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if u.EmailAPI != nil {
 		cfg.EmailAPI = *u.EmailAPI
+	}
+	if u.FreeMailBase != nil {
+		cfg.FreeMailBase = strings.TrimRight(strings.TrimSpace(*u.FreeMailBase), "/")
+	}
+	if u.FreeMailAPIKey != nil {
+		// allow explicit clear with empty string
+		cfg.FreeMailAPIKey = strings.TrimSpace(*u.FreeMailAPIKey)
 	}
 	if u.ClearanceEnabled != nil {
 		cfg.ClearanceEnabled = *u.ClearanceEnabled

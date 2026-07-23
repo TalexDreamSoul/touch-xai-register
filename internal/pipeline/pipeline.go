@@ -145,11 +145,13 @@ func (e *Engine) run(ctx context.Context) error {
 		return err
 	}
 	e.mail = email.New(email.Config{
-		Mode:          cfg.EmailMode,
-		Domain:        cfg.EmailDomain,
-		API:           cfg.EmailAPI,
-		LOLRetries:    cfg.TempmailLOLRetries,
-		LOLIntervalMS: cfg.TempmailLOLIntervalMS,
+		Mode:           cfg.EmailMode,
+		Domain:         cfg.EmailDomain,
+		API:            cfg.EmailAPI,
+		FreeMailBase:   cfg.FreeMailBase,
+		FreeMailAPIKey: cfg.FreeMailAPIKey,
+		LOLRetries:     cfg.TempmailLOLRetries,
+		LOLIntervalMS:  cfg.TempmailLOLIntervalMS,
 	})
 	e.turn = turnstile.New(turnstile.Options{
 		Provider: cfg.TurnstileProvider,

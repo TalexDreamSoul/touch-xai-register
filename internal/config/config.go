@@ -13,12 +13,17 @@ type EmailMode string
 const (
 	EmailTempmail EmailMode = "tempmail"
 	EmailCustom   EmailMode = "custom"
+	// FreeMail: Cloudflare Worker (idinging/freemail / opctoai-toolkit apps/cloudflare-mail)
+	EmailFreemail EmailMode = "freemail"
 )
 
 type Config struct {
 	EmailMode   EmailMode
 	EmailDomain string
 	EmailAPI    string
+	// FreeMail (Cloudflare Worker) — used when EmailMode=freemail
+	FreeMailBase   string
+	FreeMailAPIKey string
 
 	ClearanceEnabled bool
 	RegisterProxy    string
@@ -182,6 +187,12 @@ func Save(path string, cfg Config) error {
 	if cfg.EmailAPI != "" {
 		b.WriteString(fmt.Sprintf("EMAIL_API=%s\n", cfg.EmailAPI))
 	}
+	if cfg.FreeMailBase != "" {
+		b.WriteString(fmt.Sprintf("FREEMAIL_BASE=%s\n", cfg.FreeMailBase))
+	}
+	if cfg.FreeMailAPIKey != "" {
+		b.WriteString(fmt.Sprintf("FREEMAIL_API_KEY=%s\n", cfg.FreeMailAPIKey))
+	}
 	b.WriteString(fmt.Sprintf("CLEARANCE_ENABLED=%s\n", bool01(cfg.ClearanceEnabled)))
 	b.WriteString(fmt.Sprintf("REGISTER_PROXY=%s\n", cfg.RegisterProxy))
 	b.WriteString(fmt.Sprintf("FLARESOLVERR_URL=%s\n", cfg.FlareSolverrURL))
@@ -309,6 +320,16 @@ func applyMap(cfg *Config, env map[string]string) {
 	}
 	if v, ok := env["EMAIL_API"]; ok {
 		cfg.EmailAPI = v
+	}
+	if v, ok := env["FREEMAIL_BASE"]; ok {
+		cfg.FreeMailBase = strings.TrimRight(v, "/")
+	}
+	if v, ok := env["FREEMAIL_API_KEY"]; ok {
+		cfg.FreeMailAPIKey = v
+	}
+	// freemail convenience: EMAIL_API can alias FREEMAIL_BASE when mode is freemail
+	if cfg.EmailMode == EmailFreemail && cfg.FreeMailBase == "" && cfg.EmailAPI != "" {
+		cfg.FreeMailBase = strings.TrimRight(cfg.EmailAPI, "/")
 	}
 	if v, ok := env["CLEARANCE_ENABLED"]; ok {
 		cfg.ClearanceEnabled = truthy(v)

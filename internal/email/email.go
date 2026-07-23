@@ -16,25 +16,26 @@ import (
 )
 
 var bannedDomains = map[string]struct{}{
-	"duckmail.sbs":     {},
-	"web-library.net":  {},
-	"mail.tm":          {},
-	"mail.gw":          {},
-	"baldur.edu.kg":    {},
+	"duckmail.sbs":    {},
+	"web-library.net": {},
+	"mail.tm":         {},
+	"mail.gw":         {},
+	"baldur.edu.kg":   {},
 }
 
 var codeRe = []*regexp.Regexp{
 	regexp.MustCompile(`>([A-Z0-9]{3}-[A-Z0-9]{3})<`),
 	regexp.MustCompile(`>([A-Z0-9]{6})<`),
 	regexp.MustCompile(`\b([A-Z0-9]{3}-?[A-Z0-9]{3})\b`),
+	regexp.MustCompile(`(?i)(?:code|验证码|verification)[^\dA-Z]{0,20}([A-Z0-9]{6})\b`),
 }
 
 type Handle struct {
-	Kind     string // lol | mt | custom
+	Kind     string // lol | mt | custom | freemail
 	Email    string
 	Password string
 	Token    string
-	Base     string // mail.tm base
+	Base     string // mail.tm base or freemail base
 }
 
 type Provider struct {
@@ -45,12 +46,14 @@ type Provider struct {
 }
 
 type Config struct {
-	Mode          config.EmailMode
-	Domain        string
-	API           string
-	LOLRetries    int
-	LOLIntervalMS int
-	HTTPClient    *http.Client
+	Mode           config.EmailMode
+	Domain         string
+	API            string
+	FreeMailBase   string
+	FreeMailAPIKey string
+	LOLRetries     int
+	LOLIntervalMS  int
+	HTTPClient     *http.Client
 }
 
 func New(cfg Config) *Provider {
@@ -62,6 +65,10 @@ func New(cfg Config) *Provider {
 	}
 	if cfg.LOLIntervalMS <= 0 {
 		cfg.LOLIntervalMS = 400
+	}
+	cfg.FreeMailBase = strings.TrimRight(strings.TrimSpace(cfg.FreeMailBase), "/")
+	if cfg.Mode == config.EmailFreemail && cfg.FreeMailBase == "" {
+		cfg.FreeMailBase = strings.TrimRight(strings.TrimSpace(cfg.API), "/")
 	}
 	return &Provider{cfg: cfg}
 }
@@ -77,10 +84,23 @@ func randStr(n int) string {
 
 func (p *Provider) Create() (Handle, error) {
 	password := randStr(15)
-	if p.cfg.Mode == config.EmailCustom {
-		email := fmt.Sprintf("oc%s@%s", randStr(10), p.cfg.Domain)
+	switch p.cfg.Mode {
+	case config.EmailCustom:
+		dom := strings.TrimSpace(p.cfg.Domain)
+		if dom == "" {
+			return Handle{}, fmt.Errorf("EMAIL_DOMAIN 未配置（custom 模式需要）")
+		}
+		email := fmt.Sprintf("oc%s@%s", randStr(10), dom)
 		return Handle{Kind: "custom", Email: email, Password: password}, nil
+	case config.EmailFreemail:
+		h, err := p.freemailCreate()
+		if err != nil {
+			return Handle{}, err
+		}
+		h.Password = password
+		return h, nil
 	}
+
 	var last error
 	for i := 0; i < p.cfg.LOLRetries; i++ {
 		h, err := p.lolCreate()
@@ -103,6 +123,117 @@ func (p *Provider) Create() (Handle, error) {
 		last = fmt.Errorf("所有临时邮箱 provider 均不可用")
 	}
 	return Handle{}, last
+}
+
+func (p *Provider) freemailAuth(req *http.Request) {
+	if p.cfg.FreeMailAPIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.cfg.FreeMailAPIKey)
+	}
+	req.Header.Set("Accept", "application/json")
+}
+
+func (p *Provider) freemailCreate() (Handle, error) {
+	base := p.cfg.FreeMailBase
+	if base == "" {
+		return Handle{}, fmt.Errorf("FREEMAIL_BASE / EMAIL_API 未配置（freemail 模式需要）")
+	}
+	// Prefer generate; if EMAIL_DOMAIN set, try domainIndex match via /api/domains
+	domainIndex := 0
+	if p.cfg.Domain != "" {
+		if idx, err := p.freemailDomainIndex(p.cfg.Domain); err == nil {
+			domainIndex = idx
+		}
+	}
+	u := fmt.Sprintf("%s/api/generate?length=12&domainIndex=%d", base, domainIndex)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return Handle{}, err
+	}
+	p.freemailAuth(req)
+	resp, err := p.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return Handle{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != 200 {
+		return Handle{}, fmt.Errorf("freemail generate status %d: %s", resp.StatusCode, truncate(string(body), 200))
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return Handle{}, err
+	}
+	addr, _ := doc["email"].(string)
+	if addr == "" {
+		addr, _ = doc["address"].(string)
+	}
+	if addr == "" {
+		return Handle{}, fmt.Errorf("freemail generate missing email: %s", truncate(string(body), 200))
+	}
+	if domainBanned(addr) {
+		return Handle{}, fmt.Errorf("banned domain: %s", domainOf(addr))
+	}
+	return Handle{
+		Kind:  "freemail",
+		Email: strings.ToLower(addr),
+		Token: p.cfg.FreeMailAPIKey,
+		Base:  base,
+	}, nil
+}
+
+func (p *Provider) freemailDomainIndex(want string) (int, error) {
+	base := p.cfg.FreeMailBase
+	req, err := http.NewRequest(http.MethodGet, base+"/api/domains", nil)
+	if err != nil {
+		return 0, err
+	}
+	p.freemailAuth(req)
+	resp, err := p.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != 200 {
+		return 0, fmt.Errorf("domains status %d", resp.StatusCode)
+	}
+	want = strings.ToLower(strings.TrimSpace(want))
+	var list []any
+	if err := json.Unmarshal(body, &list); err == nil {
+		for i, it := range list {
+			switch v := it.(type) {
+			case string:
+				if strings.EqualFold(v, want) {
+					return i, nil
+				}
+			case map[string]any:
+				if d, _ := v["domain"].(string); strings.EqualFold(d, want) {
+					return i, nil
+				}
+			}
+		}
+		return 0, fmt.Errorf("domain %s not found", want)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return 0, err
+	}
+	for _, key := range []string{"domains", "results", "data"} {
+		arr, _ := doc[key].([]any)
+		for i, it := range arr {
+			switch v := it.(type) {
+			case string:
+				if strings.EqualFold(v, want) {
+					return i, nil
+				}
+			case map[string]any:
+				if d, _ := v["domain"].(string); strings.EqualFold(d, want) {
+					return i, nil
+				}
+			}
+		}
+	}
+	return 0, fmt.Errorf("domain %s not found", want)
 }
 
 func (p *Provider) lolCreate() (Handle, error) {
@@ -216,10 +347,20 @@ func (p *Provider) mailtmCreate(base, password string) (Handle, error) {
 }
 
 func (p *Provider) PollCode(h Handle, maxWait time.Duration) (string, error) {
+	if maxWait <= 0 {
+		maxWait = 2 * time.Minute
+	}
 	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
 		text, err := p.fetch(h)
 		if err == nil && text != "" {
+			// freemail may already return a bare code
+			if h.Kind == "freemail" || h.Kind == "custom" {
+				clean := strings.TrimSpace(text)
+				if reBare := regexp.MustCompile(`(?i)^[A-Z0-9]{6}$`); reBare.MatchString(strings.ReplaceAll(clean, "-", "")) {
+					return strings.ReplaceAll(clean, "-", ""), nil
+				}
+			}
 			if code := extractCode(text); code != "" {
 				return code, nil
 			}
@@ -247,6 +388,8 @@ func (p *Provider) fetch(h Handle) (string, error) {
 			return c, nil
 		}
 		return "", nil
+	case "freemail":
+		return p.freemailFetch(h)
 	case "lol":
 		resp, err := p.cfg.HTTPClient.Get("https://api.tempmail.lol/v2/inbox?token=" + url.QueryEscape(h.Token))
 		if err != nil {
@@ -299,6 +442,106 @@ func (p *Provider) fetch(h Handle) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown handle kind")
 	}
+}
+
+func (p *Provider) freemailFetch(h Handle) (string, error) {
+	base := h.Base
+	if base == "" {
+		base = p.cfg.FreeMailBase
+	}
+	if base == "" {
+		return "", fmt.Errorf("freemail base empty")
+	}
+	u := fmt.Sprintf("%s/api/emails?mailbox=%s&limit=10", base, url.QueryEscape(h.Email))
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	if h.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.Token)
+	} else {
+		p.freemailAuth(req)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("freemail emails status %d", resp.StatusCode)
+	}
+	var list []any
+	if err := json.Unmarshal(body, &list); err != nil {
+		var doc map[string]any
+		if err2 := json.Unmarshal(body, &doc); err2 != nil {
+			return "", err
+		}
+		for _, k := range []string{"results", "emails", "data"} {
+			if arr, ok := doc[k].([]any); ok {
+				list = arr
+				break
+			}
+		}
+	}
+	var b strings.Builder
+	for _, it := range list {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if c, _ := m["verification_code"].(string); strings.TrimSpace(c) != "" {
+			return strings.TrimSpace(c), nil
+		}
+		fmt.Fprintf(&b, "%v\n%v\n%v\n%v\n", m["subject"], m["preview"], m["content"], m["html_content"])
+		// try detail for first few
+		if id := fmt.Sprint(m["id"]); id != "" && id != "<nil>" {
+			if detail, err := p.freemailDetail(base, id, h.Token); err == nil {
+				if c := strings.TrimSpace(detail); c != "" {
+					if extractCode(c) != "" || regexp.MustCompile(`(?i)^[A-Z0-9-]{6,7}$`).MatchString(c) {
+						// if bare code returned
+						if reBare := regexp.MustCompile(`(?i)^[A-Z0-9]{6}$`); reBare.MatchString(strings.ReplaceAll(c, "-", "")) {
+							return strings.ReplaceAll(c, "-", ""), nil
+						}
+					}
+					b.WriteString(detail)
+					b.WriteByte('\n')
+				}
+			}
+		}
+	}
+	return b.String(), nil
+}
+
+func (p *Provider) freemailDetail(base, id, token string) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, base+"/api/email/"+url.PathEscape(id), nil)
+	if err != nil {
+		return "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		p.freemailAuth(req)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return string(body), nil
+	}
+	if c, _ := m["verification_code"].(string); strings.TrimSpace(c) != "" {
+		return strings.TrimSpace(c), nil
+	}
+	return fmt.Sprintf("%v\n%v\n%v\n%v\n", m["subject"], m["content"], m["html_content"], m["preview"]), nil
 }
 
 func extractCode(text string) string {

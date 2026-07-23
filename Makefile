@@ -4,7 +4,7 @@ VERSION?=0.2.0-panel
 PREFIX?=/usr/local
 BINDIR=$(PREFIX)/bin
 
-.PHONY: help build install uninstall clean test run panel panel-ui up down status docker-up docker-down docker-rebuild
+.PHONY: help build install uninstall clean test run panel panel-ui up down status docker-up docker-down docker-rebuild toolkit-up toolkit-down toolkit-status
 
 # Resolve go even when sudo drops PATH (mise /usr/local / home installs).
 GO ?= $(shell command -v go 2>/dev/null || true)
@@ -37,6 +37,11 @@ help:
 	@echo "  make docker-up       # compose up -d --build"
 	@echo "  make docker-rebuild  # 仅重建 panel 镜像并重启"
 	@echo "  make docker-down     # compose down"
+	@echo ""
+	@echo "Toolkit (SMTP + mail-bridge + gateway):"
+	@echo "  make toolkit-up      # 叠加 docker-compose.toolkit.yml"
+	@echo "  make toolkit-down    # 停 toolkit 叠加服务"
+	@echo "  make toolkit-status  # gateway/smtp/bridge 健康"
 	@echo ""
 	@echo "安装:"
 	@echo "  make install         # 装到 $(BINDIR)/grok"
@@ -130,3 +135,22 @@ test:
 run:
 	@if [ -z "$(GO)" ] || [ ! -x "$(GO)" ]; then echo "go not found"; exit 1; fi
 	$(GO) run ./cmd/grok help
+
+# opctoai-toolkit overlay: gateway + smtp + mail-bridge (+ existing panel stack)
+toolkit-up:
+	@test -f .env || (cp .env.example .env && echo "[*] created .env from example — 请修改 PANEL_TOKEN")
+	@test -f config/smtp/.env || (cp config/smtp/.env.example config/smtp/.env && echo "[*] created config/smtp/.env — 请填 FREEMAIL_/SMTP_")
+	COMPOSE_PROJECT_NAME=$${COMPOSE_PROJECT_NAME:-grok-register} docker compose \
+		-f docker-compose.yml -f docker-compose.toolkit.yml up -d --build
+
+toolkit-down:
+	COMPOSE_PROJECT_NAME=$${COMPOSE_PROJECT_NAME:-grok-register} docker compose \
+		-f docker-compose.yml -f docker-compose.toolkit.yml down
+
+toolkit-status:
+	@echo "== gateway =="
+	@curl -fsS -o /dev/null -w "panel  %{http_code}\n" "http://127.0.0.1:$${TOOLKIT_PORT:-8080}/panel/api/health" 2>/dev/null || echo "panel  (gateway 未响应)"
+	@curl -fsS -o /dev/null -w "smtp   %{http_code}\n" "http://127.0.0.1:$${TOOLKIT_PORT:-8080}/smtp/" 2>/dev/null || echo "smtp   (gateway 未响应)"
+	@curl -fsS "http://127.0.0.1:$${MAIL_BRIDGE_PORT:-18431}/health" 2>/dev/null | (command -v python3 >/dev/null && python3 -m json.tool || cat) \
+		|| echo "(mail-bridge 未响应 :$${MAIL_BRIDGE_PORT:-18431})"
+
