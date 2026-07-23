@@ -833,7 +833,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"cluster_node_name":            cfg.ClusterNodeName,
 		"cluster_public_token_set":     strings.TrimSpace(cfg.ClusterPublicToken) != "",
 		"cluster_master_url":           cfg.ClusterMasterURL,
-		"cluster_master_urls":          cfg.ClusterMasterURLs,
+		"cluster_master_urls":          maskMasterURLsString(cfg),
 		"cluster_master_endpoints":     maskMasterEndpoints(cfg),
 		"cluster_status_password_set":  strings.TrimSpace(cfg.ClusterStatusPassword) != "",
 		"cluster_heartbeat_sec":        cfg.ClusterHeartbeatSec,
@@ -1042,12 +1042,26 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		cfg.ClusterMasterURL = strings.TrimRight(strings.TrimSpace(*u.ClusterMasterURL), "/")
 	}
 	if u.ClusterMasterURLs != nil {
-		cfg.ClusterMasterURLs = *u.ClusterMasterURLs
-		// normalize to comma-separated single-line for config.env safety
-		ms := cfg.ClusterMasters()
-		cfg.ClusterMasterURLs = strings.Join(ms, ",")
-		if len(ms) > 0 {
-			cfg.ClusterMasterURL = ms[0]
+		// Accept JSON endpoints or legacy URL lists; blank token keeps previous per-URL secret.
+		next := config.Config{ClusterMasterURLs: *u.ClusterMasterURLs, ClusterMasterURL: ""}.ClusterMasterEndpoints()
+		prevTok := map[string]string{}
+		for _, e := range cfg.ClusterMasterEndpoints() {
+			if t := strings.TrimSpace(e.Token); t != "" {
+				prevTok[e.URL] = t
+			}
+		}
+		for i := range next {
+			if strings.TrimSpace(next[i].Token) == "" {
+				if t, ok := prevTok[next[i].URL]; ok {
+					next[i].Token = t
+				}
+			}
+		}
+		cfg.ClusterMasterURLs = config.FormatMasterEndpoints(next)
+		if len(next) > 0 {
+			cfg.ClusterMasterURL = next[0].URL
+		} else {
+			cfg.ClusterMasterURL = ""
 		}
 	}
 	if u.ClusterHeartbeatSec != nil {
@@ -1229,13 +1243,26 @@ func pageCount(total, pageSize int) int {
 }
 
 
+func maskMasterURLsString(cfg config.Config) string {
+	eps := cfg.ClusterMasterEndpoints()
+	if len(eps) == 0 {
+		return ""
+	}
+	urls := make([]string, 0, len(eps))
+	for _, e := range eps {
+		urls = append(urls, e.URL)
+	}
+	return strings.Join(urls, ",")
+}
+
 func maskMasterEndpoints(cfg config.Config) []map[string]any {
 	eps := cfg.ClusterMasterEndpoints()
 	out := make([]map[string]any, 0, len(eps))
 	for _, e := range eps {
-		item := map[string]any{"url": e.URL, "token_set": strings.TrimSpace(e.Token) != ""}
-		// never return raw token to panel list; edit form re-enters password
-		out = append(out, item)
+		out = append(out, map[string]any{
+			"url":       e.URL,
+			"token_set": strings.TrimSpace(e.Token) != "",
+		})
 	}
 	return out
 }

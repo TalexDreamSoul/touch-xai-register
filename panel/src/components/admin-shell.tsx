@@ -13,9 +13,7 @@ import {
   StackIcon,
 } from "@phosphor-icons/react";
 import {
-  Badge,
   Button,
-  DropdownMenu,
   Loader,
   Sidebar,
   Surface,
@@ -137,26 +135,17 @@ export function AdminShell({ children }: { children: ReactNode }) {
         </Sidebar.Content>
 
         <Sidebar.Footer className="!h-auto !min-h-0 !w-full !flex-col !items-stretch !gap-2 !overflow-visible !px-2 !py-2">
-          <div className="flex w-full items-center gap-1">
-            <DropdownMenu>
-              <DropdownMenu.Trigger aria-label="账号">
-                <Button variant="ghost" size="sm">
-                  账号
-                </Button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content side="top" align="end">
-                <DropdownMenu.Item
-                  onSelect={() => {
-                    logout();
-                    router.replace("/login/");
-                  }}
-                >
-                  <SignOutIcon size={16} /> 退出
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu>
-          </div>
-          <Badge variant="secondary">kumo</Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="!w-full !justify-start"
+            onClick={() => {
+              logout();
+              router.replace("/login/");
+            }}
+          >
+            <SignOutIcon size={16} /> 退出登录
+          </Button>
         </Sidebar.Footer>
       </Sidebar>
 

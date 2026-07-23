@@ -259,39 +259,11 @@ export default function ClusterPage() {
   }
 
   async function saveMastersCard() {
-    // When editing, keep previous per-master tokens if user left token blank
-    // by merging with server JSON: blank token means "keep" via re-fetch merge.
-    // Server stores only what we send; blank token clears per-master and falls back to global.
-    // If tokenSet and token empty → omit token field by reloading existing from server first.
-    const cfg = await api<{
-      config: { cluster_master_urls?: string; cluster_master_url?: string };
-    }>("/api/config");
-    let existing: MasterRow[] = [];
-    const raw = String(cfg.config.cluster_master_urls || "");
-    if (raw.trim().startsWith("[")) {
-      try {
-        const arr = JSON.parse(raw) as Array<{ url?: string; token?: string }>;
-        existing = arr.map((e) => ({
-          url: String(e.url || "").replace(/\/$/, ""),
-          token: String(e.token || ""),
-          tokenSet: !!e.token,
-        }));
-      } catch {
-        existing = [];
-      }
-    }
-    const byURL = new Map(existing.map((e) => [e.url, e]));
-    const merged = masters.map((r) => {
-      const url = r.url.replace(/\/$/, "");
-      const prev = byURL.get(url);
-      let token = r.token.trim();
-      if (!token && prev?.token) token = prev.token; // keep previous secret
-      return { url, token, tokenSet: !!token };
-    });
+    // Blank token → server keeps previous per-URL secret (or falls back to global).
     const body: Record<string, string | number | boolean> = {
-      cluster_master_urls: serializeMasters(merged),
+      cluster_master_urls: serializeMasters(masters),
     };
-    if (merged[0]) body.cluster_master_url = merged[0].url;
+    if (masters[0]) body.cluster_master_url = masters[0].url.replace(/\/$/, "");
     else body.cluster_master_url = "";
     await savePatch(body);
   }
@@ -313,37 +285,10 @@ export default function ClusterPage() {
     setBusy(true);
     setMsg("");
     try {
-      // masters merge keep tokens
-      const cfg = await api<{
-        config: { cluster_master_urls?: string };
-      }>("/api/config");
-      let existing: MasterRow[] = [];
-      const raw = String(cfg.config.cluster_master_urls || "");
-      if (raw.trim().startsWith("[")) {
-        try {
-          const arr = JSON.parse(raw) as Array<{ url?: string; token?: string }>;
-          existing = arr.map((e) => ({
-            url: String(e.url || "").replace(/\/$/, ""),
-            token: String(e.token || ""),
-            tokenSet: !!e.token,
-          }));
-        } catch {
-          existing = [];
-        }
-      }
-      const byURL = new Map(existing.map((e) => [e.url, e]));
-      const merged = masters.map((r) => {
-        const url = r.url.replace(/\/$/, "");
-        const prev = byURL.get(url);
-        let token = r.token.trim();
-        if (!token && prev?.token) token = prev.token;
-        return { url, token, tokenSet: !!token };
-      });
-
       const body: Record<string, string | number | boolean> = {
         cluster_role: role,
         cluster_node_name: nodeName,
-        cluster_master_urls: serializeMasters(merged),
+        cluster_master_urls: serializeMasters(masters),
         cluster_pool_target: parseInt(poolTarget, 10) || 0,
         cluster_assign_min: parseInt(assignMin, 10) || 1,
         cluster_assign_max: parseInt(assignMax, 10) || 10,
@@ -353,7 +298,7 @@ export default function ClusterPage() {
         cluster_share_pool_list: sharePoolList,
         cluster_share_pool_pull: sharePoolPull,
       };
-      if (merged[0]) body.cluster_master_url = merged[0].url;
+      if (masters[0]) body.cluster_master_url = masters[0].url.replace(/\/$/, "");
       else body.cluster_master_url = "";
       if (publicToken.trim()) body.cluster_public_token = publicToken.trim();
       if (statusPassword.length > 0) {

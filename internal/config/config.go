@@ -240,7 +240,8 @@ func Save(path string, cfg Config) error {
 	b.WriteString(fmt.Sprintf("CLUSTER_NODE_NAME=%s\n", cfg.ClusterNodeName))
 	// CLUSTER_PUBLIC_TOKEN: written via appendEnvKey when set from panel
 	b.WriteString(fmt.Sprintf("CLUSTER_MASTER_URL=%s\n", cfg.ClusterMasterURL))
-	b.WriteString(fmt.Sprintf("CLUSTER_MASTER_URLS=%s\n", strings.Join(cfg.ClusterMasters(), ",")))
+	// Persist full endpoints (URL + optional per-master token) as JSON.
+	b.WriteString(fmt.Sprintf("CLUSTER_MASTER_URLS=%s\n", FormatMasterEndpoints(cfg.ClusterMasterEndpoints())))
 	b.WriteString(fmt.Sprintf("CLUSTER_HEARTBEAT_SEC=%d\n", cfg.ClusterHeartbeatSec))
 	b.WriteString(fmt.Sprintf("CLUSTER_POOL_TARGET=%d\n", cfg.ClusterPoolTarget))
 	b.WriteString(fmt.Sprintf("CLUSTER_ASSIGN_MIN=%d\n", cfg.ClusterAssignMin))
